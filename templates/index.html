@@ -10,17 +10,39 @@
   <main class="container">
     <section class="hero card">
       <h1>AI-аудитор сайта</h1>
-      <p>Загрузи Excel-выгрузки Яндекс.Метрики и получите AI-анализ статистики сайта и аудит его топовых по трафику страниц.</p>
+      <p>Получи ии-аудит страницы или сайта. В режиме «Аудит по скриншоту» аудитор сходит на нужную страницу и сделает её анализ. В режиме «Полный аудит», аудитор обработает данные из метрики, выберет топовые по трафику страницы и сделает их анализ.</p>
     </section>
 
     <section class="app-shell">
     <section class="left-pane card">
       <form id="analyze-form" class="form-grid">
-        <label>Excel файлы (.xlsx, несколько):
-          <input type="file" name="files" accept=".xlsx,.xls" multiple required>
+        <label>Режим аудита:
+          <select id="audit-mode" name="audit_mode">
+            <option value="full" selected>Полный аудит</option>
+            <option value="screenshot">Аудит по скриншоту</option>
+          </select>
         </label>
 
-        <label>Сколько страниц анализировать:
+        <label class="screenshot-only hidden">Ссылка на страницу:
+          <input id="page-url" type="url" name="page_url" placeholder="https://example.com/page">
+        </label>
+
+        <label class="full-only">Excel файлы (.xlsx, несколько):
+          <input type="file" name="files" accept=".xlsx,.xls" multiple required>
+          <a href="#" id="files-help-toggle" class="toggle-prompt-link">Какие файлы надо</a>
+          <div id="files-help" class="files-help hidden">
+            <p>Нужны выгрузка этих отчётов:</p>
+            <ul>
+              <li>Аудитория — Общее число визитов</li>
+              <li>Содержание — Страницы входа</li>
+              <li>Источники — Источники, сводка</li>
+              <li>Источники — Поисковые запросы</li>
+              <li>Технологии — Устройства</li>
+            </ul>
+          </div>
+        </label>
+
+        <label class="full-only">Сколько страниц анализировать:
           <select id="top-n-mode">
             <option value="top1" selected>Топ-1</option>
             <option value="custom">Своё число</option>
@@ -34,22 +56,25 @@
           <a href="#" class="toggle-prompt-link">Показать</a>
         </label>
 
-        <label>Промпт для анализа метрики:
-          <textarea class="prompt-field" data-collapsed-rows="1" data-expanded-rows="10" name="metrics_prompt" rows="1" required>{{ default_metrics_prompt }}</textarea>
-          <a href="#" class="toggle-prompt-link">Полностью</a>
+        <label class="full-only">Промпт для анализа метрики:
+          <textarea class="prompt-field hidden" data-start-hidden="true" data-collapsed-rows="1" data-expanded-rows="10" name="metrics_prompt" rows="1" required>{{ default_metrics_prompt }}</textarea>
+          <a href="#" class="toggle-prompt-link">Показать</a>
         </label>
 
         <label>Промпт для выделения ЦА / JTBD:
-          <textarea class="prompt-field" data-collapsed-rows="1" data-expanded-rows="8" name="audience_prompt" rows="1" required>{{ default_audience_prompt }}</textarea>
-          <a href="#" class="toggle-prompt-link">Полностью</a>
+          <textarea class="prompt-field hidden" data-start-hidden="true" data-collapsed-rows="1" data-expanded-rows="8" name="audience_prompt" rows="1" required>{{ default_audience_prompt }}</textarea>
+          <a href="#" class="toggle-prompt-link">Показать</a>
         </label>
 
         <label>Промпт для анализа страниц/скриншотов:
-          <textarea class="prompt-field" data-collapsed-rows="1" data-expanded-rows="14" name="pages_prompt" rows="1" required>{{ default_pages_prompt }}</textarea>
-          <a href="#" class="toggle-prompt-link">Полностью</a>
+          <textarea class="prompt-field hidden" data-start-hidden="true" data-collapsed-rows="1" data-expanded-rows="14" name="pages_prompt" rows="1" required>{{ default_pages_prompt }}</textarea>
+          <a href="#" class="toggle-prompt-link">Показать</a>
         </label>
 
-        <button id="submit-btn" type="submit">Запустить анализ</button>
+        <div class="actions-row">
+          <button id="submit-btn" type="submit">Анализировать</button>
+          <a class="contact-link" href="https://t.me/sevavsegdakotov" target="_blank" rel="noreferrer">Написать вайбкодеру</a>
+        </div>
       </form>
     </section>
 
@@ -74,8 +99,10 @@
 
         <div id="errors-box" class="errors hidden"></div>
 
-        <h3>Анализ метрики</h3>
-        <pre id="metrics-analysis"></pre>
+        <div id="metrics-section">
+          <h3>Анализ метрики</h3>
+          <pre id="metrics-analysis"></pre>
+        </div>
 
         <h3>Анализ ЦА / JTBD</h3>
         <pre id="audience-analysis"></pre>

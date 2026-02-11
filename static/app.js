@@ -13,6 +13,7 @@
   const errorsBox = document.getElementById("errors-box");
 
   const metricsAnalysis = document.getElementById("metrics-analysis");
+  const metricsSection = document.getElementById("metrics-section");
   const audienceAnalysis = document.getElementById("audience-analysis");
   const pagesAnalysis = document.getElementById("pages-analysis");
   const pagesGrid = document.getElementById("pages-grid");
@@ -21,13 +22,26 @@
   const customTopN = document.getElementById("custom-top-n");
   const topNValue = document.getElementById("top-n-value");
   const metricsPromptField = document.querySelector('textarea[name="metrics_prompt"]');
+  const audiencePromptField = document.querySelector('textarea[name="audience_prompt"]');
   const pagesPromptField = document.querySelector('textarea[name="pages_prompt"]');
+  const filesHelpToggle = document.getElementById("files-help-toggle");
+  const filesHelp = document.getElementById("files-help");
+  const auditMode = document.getElementById("audit-mode");
+  const fullOnlyBlocks = document.querySelectorAll(".full-only");
+  const screenshotOnlyBlocks = document.querySelectorAll(".screenshot-only");
+  const filesInput = document.querySelector('input[name="files"]');
+  const pageUrlInput = document.getElementById("page-url");
 
-  const stageTimeline = [
+  const fullStageTimeline = [
     { limit: 25, text: "Этап 1/4: загрузка файлов" },
     { limit: 55, text: "Этап 2/4: анализ выгрузок" },
     { limit: 85, text: "Этап 3/4: сбор скриншотов и текста" },
     { limit: 98, text: "Этап 4/4: финальные выводы" },
+  ];
+  const screenshotStageTimeline = [
+    { limit: 35, text: "Этап 1/3: переход на страницу" },
+    { limit: 80, text: "Этап 2/3: скриншоты и текст" },
+    { limit: 98, text: "Этап 3/3: ЦА и финальный анализ" },
   ];
 
   let progressTimer = null;
@@ -42,6 +56,7 @@
   };
 
   const updateProgressUi = () => {
+    const stageTimeline = auditMode && auditMode.value === "screenshot" ? screenshotStageTimeline : fullStageTimeline;
     const stage = stageTimeline.find((item) => progress <= item.limit) || stageTimeline[stageTimeline.length - 1];
     const elapsed = (Date.now() - startTs) / 1000;
     const remaining = progress > 2 ? elapsed * ((100 - progress) / progress) : 180;
@@ -145,6 +160,9 @@
     runIdTitle.textContent = `Результат запуска ${result.run_id || "-"}`;
 
     metricsAnalysis.textContent = result.metrics_analysis || "";
+    if (metricsSection) {
+      metricsSection.classList.toggle("hidden", result.audit_mode === "screenshot");
+    }
     audienceAnalysis.textContent = result.audience_analysis || "";
     pagesAnalysis.textContent = result.pages_analysis || "";
 
@@ -167,14 +185,25 @@
     }
   };
 
+  const updateTopNInPrompt = (text, n) => {
+    return text
+      .replace(/топ-\d+/gi, `топ-${n}`)
+      .replace(/топ-страниц(?:[а-я]*)?/gi, `топ-${n} страниц`)
+      .replace(/топовые\s+страниц(?:ы|а|е|у|ой|ам|ами|ах)?/gi, `топ-${n} страниц`)
+      .replace(/топовых\s+страниц(?:ы|а|е|у|ой|ам|ами|ах)?/gi, `топ-${n} страниц`);
+  };
+
   const applyTopN = (value) => {
     const n = Math.max(1, Math.min(30, Number(value) || 1));
     topNValue.value = String(n);
     if (metricsPromptField) {
-      metricsPromptField.value = metricsPromptField.value.replace(/топ-\d+/gi, `топ-${n}`);
+      metricsPromptField.value = updateTopNInPrompt(metricsPromptField.value, n);
+    }
+    if (audiencePromptField) {
+      audiencePromptField.value = updateTopNInPrompt(audiencePromptField.value, n);
     }
     if (pagesPromptField) {
-      pagesPromptField.value = pagesPromptField.value.replace(/топ-\d+/gi, `топ-${n}`);
+      pagesPromptField.value = updateTopNInPrompt(pagesPromptField.value, n);
     }
   };
 
@@ -192,6 +221,53 @@
     topNMode.addEventListener("change", syncMode);
     customTopN.addEventListener("input", () => applyTopN(customTopN.value));
     syncMode();
+  }
+
+  if (auditMode) {
+    const syncAuditMode = () => {
+      const isFull = auditMode.value === "full";
+      fullOnlyBlocks.forEach((el) => el.classList.toggle("hidden", !isFull));
+      screenshotOnlyBlocks.forEach((el) => el.classList.toggle("hidden", isFull));
+
+      if (filesInput) {
+        filesInput.required = isFull;
+      }
+      if (pageUrlInput) {
+        pageUrlInput.required = !isFull;
+        if (isFull) {
+          pageUrlInput.value = "";
+        }
+      }
+      if (metricsSection) {
+        metricsSection.classList.toggle("hidden", !isFull);
+      }
+
+      if (!isFull) {
+        if (topNMode) topNMode.value = "top1";
+        if (customTopN) customTopN.classList.add("hidden");
+        applyTopN(1);
+      } else if (topNMode && customTopN) {
+        if (topNMode.value === "custom") {
+          customTopN.classList.remove("hidden");
+          applyTopN(customTopN.value);
+        } else {
+          customTopN.classList.add("hidden");
+          applyTopN(1);
+        }
+      }
+    };
+
+    auditMode.addEventListener("change", syncAuditMode);
+    syncAuditMode();
+  }
+
+  if (filesHelpToggle && filesHelp) {
+    filesHelpToggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      const isHidden = filesHelp.classList.contains("hidden");
+      filesHelp.classList.toggle("hidden", !isHidden);
+      filesHelpToggle.textContent = isHidden ? "Свернуть" : "Какие файлы надо";
+    });
   }
 
   const resetPromptState = (link) => {

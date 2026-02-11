@@ -110,6 +110,20 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.contact-link {
+  color: #7d3e1f;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-size: 0.94rem;
+}
+
 .toggle-prompt-link {
   width: fit-content;
   font-size: 0.9rem;
@@ -118,6 +132,23 @@ button:disabled {
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+}
+
+.files-help {
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px dashed #d8c9bb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.files-help p {
+  margin: 0 0 0.3rem;
+}
+
+.files-help ul {
+  margin: 0;
+  padding-left: 1.1rem;
 }
 
 .progress-wrap {
