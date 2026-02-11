@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-аудитор сайта</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
+</head>
+<body>
+  <main class="container">
+    <section class="hero card">
+      <h1>AI-аудитор сайта</h1>
+      <p>Загрузи Excel-выгрузки Яндекс.Метрики и получите AI-анализ статистики сайта и аудит его топовых по трафику страниц.</p>
+    </section>
+
+    <section class="app-shell">
+    <section class="left-pane card">
+      <form id="analyze-form" class="form-grid">
+        <label>Excel файлы (.xlsx, несколько):
+          <input type="file" name="files" accept=".xlsx,.xls" multiple required>
+        </label>
+
+        <label>Сколько страниц анализировать:
+          <select id="top-n-mode">
+            <option value="top1" selected>Топ-1</option>
+            <option value="custom">Своё число</option>
+          </select>
+          <input id="custom-top-n" type="number" value="5" min="1" max="30" class="hidden">
+          <input id="top-n-value" type="hidden" name="top_n" value="1">
+        </label>
+
+        <label>Промт для роли:
+          <textarea class="prompt-field hidden" data-start-hidden="true" data-collapsed-rows="1" data-expanded-rows="16" name="role_prompt" rows="1" required>{{ default_role_prompt }}</textarea>
+          <a href="#" class="toggle-prompt-link">Показать</a>
+        </label>
+
+        <label>Промпт для анализа метрики:
+          <textarea class="prompt-field" data-collapsed-rows="1" data-expanded-rows="10" name="metrics_prompt" rows="1" required>{{ default_metrics_prompt }}</textarea>
+          <a href="#" class="toggle-prompt-link">Полностью</a>
+        </label>
+
+        <label>Промпт для выделения ЦА / JTBD:
+          <textarea class="prompt-field" data-collapsed-rows="1" data-expanded-rows="8" name="audience_prompt" rows="1" required>{{ default_audience_prompt }}</textarea>
+          <a href="#" class="toggle-prompt-link">Полностью</a>
+        </label>
+
+        <label>Промпт для анализа страниц/скриншотов:
+          <textarea class="prompt-field" data-collapsed-rows="1" data-expanded-rows="14" name="pages_prompt" rows="1" required>{{ default_pages_prompt }}</textarea>
+          <a href="#" class="toggle-prompt-link">Полностью</a>
+        </label>
+
+        <button id="submit-btn" type="submit">Запустить анализ</button>
+      </form>
+    </section>
+
+    <section class="right-pane card">
+      <div id="progress-wrap" class="progress-wrap hidden">
+        <div class="progress-head">
+          <strong id="progress-status">Идёт анализ…</strong>
+          <span id="progress-percent">0%</span>
+        </div>
+        <div class="progress-track" aria-label="Прогресс анализа">
+          <div id="progress-bar" class="progress-bar"></div>
+        </div>
+        <p id="progress-eta" class="muted">Примерное время до окончания: ~03:00</p>
+      </div>
+
+      <div id="empty-state" class="empty-state">
+        Результаты анализа появятся здесь после запуска.
+      </div>
+
+      <div id="result-view" class="hidden">
+        <h2 id="run-id-title">Результат</h2>
+
+        <div id="errors-box" class="errors hidden"></div>
+
+        <h3>Анализ метрики</h3>
+        <pre id="metrics-analysis"></pre>
+
+        <h3>Анализ ЦА / JTBD</h3>
+        <pre id="audience-analysis"></pre>
+
+        <h3>Анализ страниц и скриншотов</h3>
+        <pre id="pages-analysis"></pre>
+
+        <h3>Топ страницы</h3>
+        <div id="pages-grid" class="grid"></div>
+      </div>
+    </section>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v={{ asset_version }}" defer></script>
+</body>
+</html>
