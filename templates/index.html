@@ -10,7 +10,7 @@
   <main class="container">
     <section class="hero card">
       <h1>AI-аудитор сайта</h1>
-      <p>Получи ии-аудит страницы или сайта. В режиме «Аудит по скриншоту» аудитор сходит на нужную страницу и сделает её анализ. В режиме «Полный аудит», аудитор обработает данные из метрики, выберет топовые по трафику страницы и сделает их анализ.</p>
+      <p>Получи ии-аудит страницы или сайта. В режиме <strong>«Аудит по ссылке»</strong> аудитор сходит на нужную страницу и сделает её анализ. В режиме <strong>«Полный аудит»</strong>, аудитор обработает данные из метрики, выберет топовые по трафику страницы и сделает их анализ.</p>
     </section>
 
     <section class="app-shell">
@@ -18,8 +18,8 @@
       <form id="analyze-form" class="form-grid">
         <label>Режим аудита:
           <select id="audit-mode" name="audit_mode">
-            <option value="full" selected>Полный аудит</option>
-            <option value="screenshot">Аудит по скриншоту</option>
+            <option value="full">Полный аудит</option>
+            <option value="screenshot" selected>Аудит по ссылке</option>
           </select>
         </label>
 
@@ -96,8 +96,17 @@
 
       <div id="result-view" class="hidden">
         <h2 id="run-id-title">Результат</h2>
+        <div class="report-actions">
+          <button id="copy-report-btn" type="button">Копировать отчёт</button>
+          <button id="download-pdf-btn" type="button">Выгрузить в PDF</button>
+        </div>
 
         <div id="errors-box" class="errors hidden"></div>
+
+        <div id="summary-section">
+          <h3>Саммари</h3>
+          <pre id="final-summary"></pre>
+        </div>
 
         <div id="metrics-section">
           <h3>Анализ метрики</h3>

@@ -11,7 +11,11 @@
   const resultView = document.getElementById("result-view");
   const runIdTitle = document.getElementById("run-id-title");
   const errorsBox = document.getElementById("errors-box");
+  const copyReportBtn = document.getElementById("copy-report-btn");
+  const downloadPdfBtn = document.getElementById("download-pdf-btn");
 
+  const finalSummary = document.getElementById("final-summary");
+  const summarySection = document.getElementById("summary-section");
   const metricsAnalysis = document.getElementById("metrics-analysis");
   const metricsSection = document.getElementById("metrics-section");
   const audienceAnalysis = document.getElementById("audience-analysis");
@@ -47,6 +51,7 @@
   let progressTimer = null;
   let progress = 0;
   let startTs = 0;
+  let lastResult = null;
 
   const formatEta = (seconds) => {
     const safe = Math.max(0, Math.round(seconds));
@@ -154,11 +159,23 @@
   };
 
   const renderResult = (result) => {
+    lastResult = result;
     emptyState.classList.add("hidden");
     resultView.classList.remove("hidden");
 
-    runIdTitle.textContent = `Результат запуска ${result.run_id || "-"}`;
+    let domain = "-";
+    try {
+      const firstUrl = Array.isArray(result.top_pages) && result.top_pages.length > 0 ? result.top_pages[0].url : "";
+      domain = firstUrl ? new URL(firstUrl).hostname : "-";
+    } catch (error) {
+      domain = "-";
+    }
+    runIdTitle.textContent = `Отчёт для сайта ${domain}`;
 
+    finalSummary.textContent = result.final_summary || "";
+    if (summarySection) {
+      summarySection.classList.toggle("hidden", !result.final_summary);
+    }
     metricsAnalysis.textContent = result.metrics_analysis || "";
     if (metricsSection) {
       metricsSection.classList.toggle("hidden", result.audit_mode === "screenshot");
@@ -184,6 +201,101 @@
       errorsBox.replaceChildren();
     }
   };
+
+  const buildReportText = (result) => {
+    const lines = [];
+    lines.push(`Результат запуска: ${result.run_id || "-"}`);
+    lines.push(`Режим: ${result.audit_mode || "-"}`);
+    lines.push("");
+    if (result.final_summary) {
+      lines.push("Саммари");
+      lines.push(result.final_summary);
+      lines.push("");
+    }
+    if (result.metrics_analysis) {
+      lines.push("Анализ метрики");
+      lines.push(result.metrics_analysis);
+      lines.push("");
+    }
+    if (result.audience_analysis) {
+      lines.push("Анализ ЦА / JTBD");
+      lines.push(result.audience_analysis);
+      lines.push("");
+    }
+    if (result.pages_analysis) {
+      lines.push("Анализ страниц и скриншотов");
+      lines.push(result.pages_analysis);
+      lines.push("");
+    }
+    if (Array.isArray(result.top_pages) && result.top_pages.length > 0) {
+      lines.push("Топ страницы");
+      result.top_pages.forEach((page, idx) => {
+        lines.push(`${idx + 1}. ${page.url} | Визиты: ${page.visits} | Title: ${page.title || "-"}`);
+      });
+      lines.push("");
+    }
+    if (Array.isArray(result.errors) && result.errors.length > 0) {
+      lines.push("Ошибки");
+      result.errors.forEach((err) => lines.push(`- ${err}`));
+    }
+    return lines.join("\n");
+  };
+
+  if (copyReportBtn) {
+    copyReportBtn.addEventListener("click", async () => {
+      if (!lastResult) return;
+      const text = buildReportText(lastResult);
+      try {
+        await navigator.clipboard.writeText(text);
+        copyReportBtn.textContent = "Скопировано";
+        window.setTimeout(() => {
+          copyReportBtn.textContent = "Копировать отчёт";
+        }, 1600);
+      } catch (error) {
+        copyReportBtn.textContent = "Ошибка копирования";
+        window.setTimeout(() => {
+          copyReportBtn.textContent = "Копировать отчёт";
+        }, 1800);
+      }
+    });
+  }
+
+  if (downloadPdfBtn) {
+    downloadPdfBtn.addEventListener("click", async () => {
+      if (!lastResult) return;
+      downloadPdfBtn.disabled = true;
+      downloadPdfBtn.textContent = "Готовим PDF…";
+      try {
+        const response = await fetch("/report/pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(lastResult),
+        });
+        if (!response.ok) {
+          throw new Error("Не удалось сформировать PDF");
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `audit_report_${lastResult.run_id || "report"}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        downloadPdfBtn.textContent = "Ошибка PDF";
+        window.setTimeout(() => {
+          downloadPdfBtn.textContent = "Выгрузить в PDF";
+        }, 1700);
+      } finally {
+        downloadPdfBtn.disabled = false;
+        if (downloadPdfBtn.textContent !== "Ошибка PDF") {
+          downloadPdfBtn.textContent = "Выгрузить в PDF";
+        }
+      }
+    });
+  }
 
   const updateTopNInPrompt = (text, n) => {
     return text
@@ -345,6 +457,7 @@
     } catch (error) {
       renderResult({
         run_id: "-",
+        final_summary: "",
         metrics_analysis: "",
         audience_analysis: "",
         pages_analysis: "",

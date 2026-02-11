@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+from html import escape
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Body, FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from playwright.async_api import async_playwright
 
 from app.crawler import collect_page_artifacts
 from app.llm import LLMClient
@@ -26,6 +28,36 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+FINAL_SUMMARY_PROMPT = """<PROMPT_FINAL_SUMMARY_v1>
+
+Сделай краткое итоговое саммари по проделанной работе (данные Метрики + JTBD-сегментация + анализ скриншотов/UX).
+Пиши максимально по делу, без вступлений и без повторов.
+
+<ограничения>
+— Не выводи роль.
+— Не объясняй методологию.
+— Без «воды» и общих фраз.
+— Если чего-то не было в исходных материалах — не выдумывай.
+— Объём: 8–14 строк (строго).
+</ограничения>
+
+<формат_вывода_строго>
+1) Страница: <URL или название> (1 строка)
+2) ЦА (JTBD, 3–5 сегментов): (в 3–5 строк, каждый сегмент — 3–7 слов, по ситуации/задаче, НЕ по демографии)
+3) Главное (5–7 пунктов): (маркированный список, только самое полезное)
+   — 1–2 ключевые находки (что уже хорошо/работает)
+   — 2–3 ключевые проблемы (что мешает конверсии/пониманию)
+   — 2–3 приоритетные доработки (что делать в первую очередь)
+4) Риски/зависимости (1–2 строки): что нельзя утверждать без дополнительных данных
+</формат_вывода_строго>
+
+<подсказка_по_формулировкам_сегментов>
+Сегмент JTBD формулируй так: «Когда <ситуация>, хочу <результат>».
+Пример: «Когда сменили подрядчика, хочу прогнозируемый рост лидов».
+</подсказка_по_формулировкам_сегментов>
+
+</PROMPT_FINAL_SUMMARY_v1>"""
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
@@ -35,12 +67,12 @@ async def index(request: Request) -> HTMLResponse:
         {
             "result": None,
             "asset_version": datetime.now().strftime("%Y%m%d%H%M%S"),
-            "default_role_prompt": """<SYSTEM_OUTPUT_STANDARD_v1>
+            "default_role_prompt": """<SYSTEM_OUTPUT_STANDARD_v2_NO_ROLE_OUTPUT>
 
-<role>
+<internal_role>
 Ты — старший веб-аналитик и UX-стратег с JTBD-подходом (Яндекс.Метрика + посадочные страницы).
-Цель: давать внедряемые выводы и рекомендации, не выдумывая данных.
-</role>
+Роль используется только для качества анализа и выбора фокуса, но НЕ выводится в ответе.
+</internal_role>
 
 <principles>
 1) Пиши по-русски, корректная типографика («ёлочки», длинное тире).
@@ -52,38 +84,35 @@ async def index(request: Request) -> HTMLResponse:
 </principles>
 
 <universal_output_format>
-Всегда соблюдай следующий каркас (если секция не применима — пропусти):
+Всегда соблюдай следующий каркас (если секция не применима — пропусти). Важно: НЕ выводи «роль» и любые награды/самоописания.
 
-1) Роль (1 строка)
-«Отвечу как …, лауреат …»
-
-2) Краткий вывод (3–6 строк)
+1) Краткий вывод (3–6 строк)
 — 1–2 главные находки
 — 1–2 главных риска/узких места
 — 1–2 главных действия с наибольшим эффектом
 
-3) Основание выводов
+2) Основание выводов
 Коротко перечисли, на чём основаны выводы:
 — какие поля/срезы в данных использованы ИЛИ
-— что именно видно на скриншотах/в тексте
+— что именно видно на скриншотах/в тексте (цитаты/названия блоков/элементы)
 
-4) Детальный разбор (по заданной задаче)
+3) Детальный разбор (по заданной задаче)
 Выводи блоками строго по задаче. В каждом блоке:
 а) Наблюдение (что видно)
 б) Интерпретация (что это значит)
 в) Рекомендация (что менять)
 
-5) Проблемы и решения (если задача про проблемы/UX)
+4) Проблемы и решения (если задача про проблемы/UX)
 Формат каждой строки строго:
 «Проблема → почему проблема → решение»
 Лимит: не более N пунктов на раздел (N задаётся в пользовательском промпте; если не задано — N=5).
 
-6) Приоритизация
+5) Приоритизация
 Если есть несколько рекомендаций:
 — High / Medium / Low (влияние × трудоёмкость)
 — 1–2 предложения обоснования
 
-7) Что уточнить (только если не хватает данных)
+6) Что уточнить (только если не хватает данных)
 Список из 3–7 конкретных полей/срезов/вопросов.
 </universal_output_format>
 
@@ -91,9 +120,10 @@ async def index(request: Request) -> HTMLResponse:
 — Никакой «воды» и общих фраз.
 — Рекомендации должны быть проверяемыми и внедряемыми (что именно поменять).
 — Если просили «до 5» — не превышай.
+— Не добавляй секции, которых не просили, кроме «Что уточнить», когда реально не хватает данных.
 </quality_bar>
 
-</SYSTEM_OUTPUT_STANDARD_v1>""",
+</SYSTEM_OUTPUT_STANDARD_v2_NO_ROLE_OUTPUT>""",
             "default_metrics_prompt": """<PROMPT_METRIKA_DATA_ANALYSIS_v1>
 
 Ты — веб-аналитик уровня senior по Яндекс.Метрике. Проанализируй приложенную выгрузку из Яндекс.Метрики по сайту и дай развёрнутые, аргументированные выводы, которые помогут определить и уточнить целевую аудиторию сайта для последующей доработки.
@@ -253,6 +283,7 @@ async def _run_analysis(
         "run_id": run_id,
         "audit_mode": audit_mode,
         "top_pages": [],
+        "final_summary": "",
         "metrics_analysis": "",
         "audience_analysis": "",
         "pages_analysis": "",
@@ -265,7 +296,7 @@ async def _run_analysis(
         if audit_mode == "screenshot":
             normalized_url = page_url.strip()
             if not normalized_url.startswith(("http://", "https://")):
-                result["errors"].append("Для режима «Аудит по скриншоту» укажите корректную ссылку на страницу (http/https).")
+                result["errors"].append("Для режима «Аудит по ссылке» укажите корректную ссылку на страницу (http/https).")
                 return result
             top_pages = [TopPage(url=normalized_url, visits=0)]
             result["metrics_analysis"] = ""
@@ -323,6 +354,18 @@ async def _run_analysis(
             pages_payload,
         )
 
+        summary_payload = {
+            "audit_mode": audit_mode,
+            "metrics_analysis": result["metrics_analysis"],
+            "audience_analysis": result["audience_analysis"],
+            "pages_analysis": result["pages_analysis"],
+            "pages": artifacts,
+        }
+        result["final_summary"] = await llm.analyze(
+            f"{role_prompt}\n\nЗадача этапа 4 (итоговое саммари):\n{FINAL_SUMMARY_PROMPT}",
+            summary_payload,
+        )
+
         (DATA_DIR / f"report_{run_id}.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -355,3 +398,75 @@ async def analyze(
         pages_prompt=pages_prompt,
     )
     return JSONResponse(content=result)
+
+
+def _build_report_html(result: dict) -> str:
+    top_pages = result.get("top_pages") or []
+    rows = []
+    for idx, page in enumerate(top_pages, start=1):
+        rows.append(
+            "<li>"
+            f"{idx}. <b>{escape(str(page.get('url', '-')))}</b><br>"
+            f"Визиты: {escape(str(page.get('visits', '-')))}<br>"
+            f"Title: {escape(str(page.get('title', '-')))}"
+            "</li>"
+        )
+    top_pages_html = "<ul>" + "".join(rows) + "</ul>" if rows else "<p>Нет страниц</p>"
+
+    def section(title: str, text: str) -> str:
+        if not text:
+            return ""
+        return f"<h3>{escape(title)}</h3><pre>{escape(text)}</pre>"
+
+    return f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 24px; color: #111; }}
+    h1 {{ margin: 0 0 8px; }}
+    h2 {{ margin: 0 0 14px; color: #555; font-size: 16px; }}
+    h3 {{ margin: 18px 0 8px; }}
+    pre {{
+      white-space: pre-wrap;
+      border: 1px solid #ddd;
+      padding: 10px;
+      border-radius: 6px;
+      background: #fafafa;
+      font-family: Arial, sans-serif;
+    }}
+    ul {{ margin-top: 8px; }}
+    li {{ margin-bottom: 8px; }}
+  </style>
+</head>
+<body>
+  <h1>Отчёт аудита сайта</h1>
+  <h2>Run ID: {escape(str(result.get("run_id", "-")))} | Режим: {escape(str(result.get("audit_mode", "-")))}</h2>
+  {section("Саммари", str(result.get("final_summary", "")))}
+  {section("Анализ метрики", str(result.get("metrics_analysis", "")))}
+  {section("Анализ ЦА / JTBD", str(result.get("audience_analysis", "")))}
+  {section("Анализ страниц и скриншотов", str(result.get("pages_analysis", "")))}
+  <h3>Топ страницы</h3>
+  {top_pages_html}
+</body>
+</html>"""
+
+
+@app.post("/report/pdf")
+async def report_pdf(payload: dict = Body(...)) -> Response:
+    html = _build_report_html(payload)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        context = await browser.new_context()
+        page = await context.new_page()
+        await page.set_content(html, wait_until="load")
+        pdf_bytes = await page.pdf(format="A4", print_background=True, margin={"top": "18mm", "right": "12mm", "bottom": "18mm", "left": "12mm"})
+        await context.close()
+        await browser.close()
+
+    run_id = str(payload.get("run_id", "report"))
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="audit_report_{run_id}.pdf"'},
+    )

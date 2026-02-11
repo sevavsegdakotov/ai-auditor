@@ -117,6 +117,19 @@ button:disabled {
   align-items: center;
 }
 
+.report-actions {
+  display: flex;
+  gap: 0.55rem;
+  margin-bottom: 0.8rem;
+}
+
+.report-actions button {
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid #d8c9bb;
+  padding: 0.5rem 0.75rem;
+}
+
 .contact-link {
   color: #7d3e1f;
   text-decoration: underline;
