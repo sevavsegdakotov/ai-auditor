@@ -72,6 +72,10 @@ h3 {
   color: var(--text);
 }
 
+.header-action {
+  margin-top: 12px;
+}
+
 .header-more {
   margin: 10px 0 0;
   color: var(--muted);

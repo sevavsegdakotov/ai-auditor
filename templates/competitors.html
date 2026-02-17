@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Анализ конкурентов</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
+</head>
+<body>
+  <main class="page">
+    <section class="card header-card">
+      <h1>Анализ конкурентов</h1>
+      <p class="header-subtitle">Добавьте сайты конкурентов, задайте промпт и получите сравнительный аудит на основе скриншотов и текста страниц.</p>
+      <a class="btn-outline header-action" href="/">Вернуться к аудиту сайта</a>
+    </section>
+
+    <section class="layout-grid">
+      <aside class="card left-panel">
+        <form id="competitors-form" class="form-grid">
+          <section class="form-section">
+            <h2>Сайты для анализа</h2>
+            <label class="field-label">Ссылки (каждая с новой строки)
+              <textarea id="competitor-urls" name="competitor_urls" rows="8" placeholder="https://site1.com\nhttps://site2.com\nsite3.com" required></textarea>
+            </label>
+          </section>
+
+          <section class="form-section">
+            <h2>Промпт анализа</h2>
+            <label class="field-label">Инструкция для AI
+              <textarea id="competitor-prompt" name="competitor_prompt" rows="12" required>{{ default_competitor_prompt }}</textarea>
+            </label>
+          </section>
+
+          <div class="actions-row">
+            <button id="competitors-submit" class="btn-primary" type="submit">Анализировать конкурентов</button>
+          </div>
+        </form>
+      </aside>
+
+      <section class="right-panel">
+        <section class="card progress-card">
+          <h2>Ход анализа</h2>
+          <div id="comp-progress-wrap" class="progress-wrap hidden">
+            <div class="progress-head">
+              <strong id="comp-progress-status">Идёт анализ…</strong>
+              <span id="comp-progress-percent">0%</span>
+            </div>
+            <div class="progress-track" aria-label="Прогресс анализа конкурентов">
+              <div id="comp-progress-bar" class="progress-bar"></div>
+            </div>
+            <p id="comp-progress-eta" class="muted">Примерное время до окончания: ~02:30</p>
+          </div>
+          <div id="comp-progress-idle" class="empty-inline">Запустите анализ конкурентов.</div>
+        </section>
+
+        <section class="card report-card">
+          <div id="comp-empty-state" class="empty-state">Отчёт конкурентов появится здесь.</div>
+
+          <div id="comp-result-view" class="hidden">
+            <h2 id="comp-run-title">Отчёт по конкурентам</h2>
+
+            <div id="comp-errors" class="errors hidden"></div>
+
+            <h3>Выводы</h3>
+            <pre id="comp-analysis"></pre>
+
+            <h3>Страницы</h3>
+            <div id="comp-pages-grid" class="grid"></div>
+          </div>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/competitors.js?v={{ asset_version }}" defer></script>
+</body>
+</html>
