@@ -3,23 +3,31 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ai-аналитик</title>
+  <title>AiНАЛИТИК</title>
   <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
 </head>
 <body>
   <main class="page">
-    <section class="card header-card">
-      <h1>ai-аналитик</h1>
-      <div class="header-subtitle-row">
-        <p class="header-subtitle">Сервис делает <strong>аудит сайта</strong>, <strong>анализ конкурентов</strong> и режим <strong>«Структура по топ-10»</strong> по выдаче KeySo.</p>
-        <button id="header-more-toggle" class="help-icon-btn" type="button" aria-expanded="false" aria-controls="header-more" title="Подробнее">?</button>
-      </div>
-      <div class="header-actions">
-        <a class="btn-primary" href="/">Аудит сайта</a>
-        <a class="btn-outline" href="/competitors">Анализ конкурентов</a>
-        <a class="btn-outline" href="/top10-structure">Структура по топ-10</a>
-      </div>
-      <p id="header-more" class="header-more hidden">Режим «Аудит сайта» поддерживает быстрый аудит по одной ссылке и полный аудит с Excel-выгрузками Яндекс.Метрики. Режим «Анализ конкурентов» позволяет загрузить сайты и получить разбор по вкладкам. Режим «Структура по топ-10» берет список запросов, получает частотные URL из выдачи через KeySo и строит структуру страницы.</p>
+    <section class="card app-topbar">
+      <a class="logo-link" href="/">
+        <img src="/static/logo.png" alt="" class="brand-logo" onerror="this.style.display='none'">
+        <span>AiНАЛИТИК</span>
+      </a>
+      <nav class="tool-nav" aria-label="Инструменты">
+        <div class="tool-item">
+          <a class="tool-link active" href="/">Аудит сайта</a>
+          <button class="help-icon-btn tool-help-btn" type="button" data-help-title="Аудит сайта" data-help-text="Инструмент для двух сценариев: «Аудит по ссылке» (анализ одной страницы) и «Полный аудит» (анализ выгрузок Метрики + топовых страниц со скриншотами и выводами).">?</button>
+        </div>
+        <div class="tool-item">
+          <a class="tool-link" href="/competitors">Анализ конкурентов</a>
+          <button class="help-icon-btn tool-help-btn" type="button" data-help-title="Анализ конкурентов" data-help-text="Собирает скриншоты и текст страниц конкурентов, затем формирует отдельные вкладки: анализ структуры, анализ смыслов и предложение по структуре.">?</button>
+        </div>
+        <div class="tool-item">
+          <a class="tool-link" href="/top10-structure">Структура по топ-10</a>
+          <button class="help-icon-btn tool-help-btn" type="button" data-help-title="Структура по топ-10" data-help-text="По списку запросов и региону получает top-10 URL из выдачи, анализирует страницы и предлагает оптимальную структуру с учетом частотных блоков.">?</button>
+        </div>
+      </nav>
+      <a class="vibecoder-link" href="https://t.me/sevavsegdakotov" target="_blank" rel="noreferrer">Написать вайбкодеру</a>
     </section>
 
     <section class="layout-grid">
@@ -114,7 +122,6 @@
 
           <div class="actions-row">
             <button id="submit-btn" class="btn-primary" type="submit">Анализировать</button>
-            <a class="btn-outline" href="https://t.me/sevavsegdakotov" target="_blank" rel="noreferrer">Написать вайбкодеру</a>
           </div>
         </form>
       </aside>
@@ -183,6 +190,17 @@
     </section>
   </main>
 
+  <div id="tool-help-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="tool-help-title">
+      <div class="modal-head">
+        <h3 id="tool-help-title">Описание</h3>
+        <button id="tool-help-close" class="help-icon-btn modal-close" type="button" aria-label="Закрыть">×</button>
+      </div>
+      <p id="tool-help-text" class="modal-text"></p>
+    </div>
+  </div>
+
+  <script src="/static/topbar-help.js?v={{ asset_version }}" defer></script>
   <script src="/static/app.js?v={{ asset_version }}" defer></script>
 </body>
 </html>
