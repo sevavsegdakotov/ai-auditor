@@ -18,6 +18,7 @@
 
   const copyReportBtn = document.getElementById("copy-report-btn");
   const downloadPdfBtn = document.getElementById("download-pdf-btn");
+  const exportSheetsBtn = document.getElementById("export-sheets-btn");
 
   const finalSummary = document.getElementById("final-summary");
   const summarySection = document.getElementById("summary-section");
@@ -361,8 +362,7 @@
     headerMoreToggle.addEventListener("click", () => {
       const hidden = headerMore.classList.contains("hidden");
       headerMore.classList.toggle("hidden", !hidden);
-      headerMoreToggle.textContent = hidden ? "Свернуть" : "Подробнее";
-      headerMoreToggle.setAttribute("aria-expanded", String(hidden));
+            headerMoreToggle.setAttribute("aria-expanded", String(hidden));
     });
   }
 
@@ -450,6 +450,37 @@
         if (downloadPdfBtn.textContent !== "Ошибка PDF") {
           downloadPdfBtn.textContent = "В PDF";
         }
+      }
+    });
+  }
+
+  if (exportSheetsBtn) {
+    exportSheetsBtn.addEventListener("click", async () => {
+      if (!lastResult) return;
+      exportSheetsBtn.disabled = true;
+      exportSheetsBtn.textContent = "Экспортируем…";
+      try {
+        const response = await fetch("/export/google-sheets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            report_type: "site",
+            payload: lastResult,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok || (payload.errors && payload.errors.length > 0)) {
+          throw new Error((payload.errors || []).join("; ") || "Ошибка экспорта");
+        }
+        window.open(payload.spreadsheet_url, "_blank", "noopener,noreferrer");
+        exportSheetsBtn.textContent = "Готово";
+      } catch (error) {
+        exportSheetsBtn.textContent = "Ошибка";
+      } finally {
+        setTimeout(() => {
+          exportSheetsBtn.disabled = false;
+          exportSheetsBtn.textContent = "В Google Sheets";
+        }, 1500);
       }
     });
   }

@@ -3,15 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Анализ конкурентов</title>
+  <title>ai-аналитик</title>
   <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
 </head>
 <body>
   <main class="page">
     <section class="card header-card">
-      <h1>Анализ конкурентов</h1>
-      <p class="header-subtitle">Добавьте сайты конкурентов, задайте промпт и получите сравнительный аудит на основе скриншотов и текста страниц.</p>
-      <a class="btn-outline header-action" href="/">Вернуться к аудиту сайта</a>
+      <h1>ai-аналитик</h1>
+      <div class="header-subtitle-row">
+        <p class="header-subtitle">Добавьте сайты конкурентов и получите разбор в трёх вкладках: структура сайтов, смыслы и предложение по оптимальной структуре.</p>
+        <button id="header-more-toggle" class="help-icon-btn" type="button" aria-expanded="false" aria-controls="header-more" title="Подробнее">?</button>
+      </div>
+      <div class="header-actions">
+        <a class="btn-outline" href="/">Аудит сайта</a>
+        <a class="btn-primary" href="/competitors">Анализ конкурентов</a>
+        <a class="btn-outline" href="/top10-structure">Структура по топ-10</a>
+      </div>
+      <p id="header-more" class="header-more hidden">Сервис по каждой ссылке снимает скриншоты desktop/mobile, извлекает текст страницы и выполняет последовательный анализ тремя промптами. Результаты выводятся в отдельные вкладки для удобного сравнения.</p>
     </section>
 
     <section class="layout-grid">
@@ -25,10 +33,27 @@
           </section>
 
           <section class="form-section">
-            <h2>Промпт анализа</h2>
-            <label class="field-label">Инструкция для AI
-              <textarea id="competitor-prompt" name="competitor_prompt" rows="12" required>{{ default_competitor_prompt }}</textarea>
-            </label>
+            <details class="accordion" open>
+              <summary>Расширенные настройки</summary>
+
+              <div class="prompt-row">
+                <div><h3>Промпт 1: Анализ сайтов</h3></div>
+                <button class="btn-tertiary comp-prompt-toggle" data-target="comp-prompt-1" type="button">Редактировать</button>
+              </div>
+              <textarea id="comp-prompt-1" class="prompt-field hidden" name="competitor_prompt_1" rows="8" required>{{ default_competitor_prompt_1 }}</textarea>
+
+              <div class="prompt-row">
+                <div><h3>Промпт 2: Анализ смыслов</h3></div>
+                <button class="btn-tertiary comp-prompt-toggle" data-target="comp-prompt-2" type="button">Редактировать</button>
+              </div>
+              <textarea id="comp-prompt-2" class="prompt-field hidden" name="competitor_prompt_2" rows="8" required>{{ default_competitor_prompt_2 }}</textarea>
+
+              <div class="prompt-row">
+                <div><h3>Промпт 3: Предложение по структуре</h3></div>
+                <button class="btn-tertiary comp-prompt-toggle" data-target="comp-prompt-3" type="button">Редактировать</button>
+              </div>
+              <textarea id="comp-prompt-3" class="prompt-field hidden" name="competitor_prompt_3" rows="8" required>{{ default_competitor_prompt_3 }}</textarea>
+            </details>
           </section>
 
           <div class="actions-row">
@@ -57,12 +82,32 @@
           <div id="comp-empty-state" class="empty-state">Отчёт конкурентов появится здесь.</div>
 
           <div id="comp-result-view" class="hidden">
-            <h2 id="comp-run-title">Отчёт по конкурентам</h2>
+            <div class="report-header">
+              <h2 id="comp-run-title">Отчёт по конкурентам</h2>
+              <div class="report-actions">
+                <button id="comp-export-sheets-btn" class="btn-secondary" type="button">В Google Sheets</button>
+              </div>
+            </div>
 
             <div id="comp-errors" class="errors hidden"></div>
 
-            <h3>Выводы</h3>
-            <pre id="comp-analysis"></pre>
+            <div class="tab-row" role="tablist" aria-label="Вкладки отчёта конкурентов">
+              <button id="tab-sites" class="tab-btn active" type="button" role="tab" aria-selected="true" data-target="panel-sites">Анализ структуры</button>
+              <button id="tab-meanings" class="tab-btn" type="button" role="tab" aria-selected="false" data-target="panel-meanings">Анализ смыслов</button>
+              <button id="tab-structure" class="tab-btn" type="button" role="tab" aria-selected="false" data-target="panel-structure">Предложение по структуре</button>
+            </div>
+
+            <section id="panel-sites" class="tab-panel">
+              <pre id="comp-analysis-sites"></pre>
+            </section>
+
+            <section id="panel-meanings" class="tab-panel hidden">
+              <pre id="comp-analysis-meanings"></pre>
+            </section>
+
+            <section id="panel-structure" class="tab-panel hidden">
+              <pre id="comp-structure-proposal"></pre>
+            </section>
 
             <h3>Страницы</h3>
             <div id="comp-pages-grid" class="grid"></div>

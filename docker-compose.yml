@@ -1,10 +1,13 @@
+name: ai-analitik
+
 services:
-  metrika-auditor:
+  ai-analitik:
     build: .
-    container_name: metrika-auditor
+    container_name: ai-analitik
     ports:
       - "8000:8000"
     env_file:
       - .env
     volumes:
       - ./data:/app/data
+    restart: unless-stopped

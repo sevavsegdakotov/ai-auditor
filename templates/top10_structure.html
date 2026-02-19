@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ai-аналитик</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
+</head>
+<body>
+  <main class="page">
+    <section class="card header-card">
+      <h1>ai-аналитик</h1>
+      <div class="header-subtitle-row">
+        <p class="header-subtitle">Режим <strong>«Структура по топ-10»</strong>: по списку запросов получаем top‑10 URL из выдачи, затем строим структурный анализ и финальное предложение по структуре.</p>
+        <button id="header-more-toggle" class="help-icon-btn" type="button" aria-expanded="false" aria-controls="header-more" title="Подробнее">?</button>
+      </div>
+      <div class="header-actions">
+        <a class="btn-outline" href="/">Аудит сайта</a>
+        <a class="btn-outline" href="/competitors">Анализ конкурентов</a>
+        <a class="btn-primary" href="/top10-structure">Структура по топ-10</a>
+      </div>
+      <p id="header-more" class="header-more hidden">Можно сначала нажать «Показать топ-10», при необходимости отредактировать список URL, а затем запустить «Строить структуру». Если список URL не редактировать, анализ стартует сразу по данным KeySo.</p>
+    </section>
+
+    <section class="layout-grid">
+      <aside class="card left-panel">
+        <form id="top10-form" class="form-grid">
+          <section class="form-section">
+            <h2>Запросы</h2>
+            <label class="field-label">Список запросов (по одному в строке)
+              <textarea id="top10-queries" name="search_queries" rows="8" placeholder="купить диван\nдиван на заказ\nдиван москва" required></textarea>
+            </label>
+            <label class="field-label">Регион
+              <input id="top10-region-search" type="text" list="top10-region-list" value="{{ default_region_name }} ({{ default_region_id }})" placeholder="Начните вводить: Пер...">
+              <datalist id="top10-region-list"></datalist>
+              <input id="top10-region-id" type="hidden" name="region_id" value="{{ default_region_id }}">
+              <span id="top10-region-hint" class="muted">Выбран регион: {{ default_region_name }} ({{ default_region_id }})</span>
+            </label>
+            <div class="actions-row">
+              <button id="top10-show-btn" class="btn-secondary" type="button">Показать топ-10</button>
+              <button id="top10-build-btn" class="btn-primary" type="submit">Строить структуру</button>
+            </div>
+          </section>
+
+          <section class="form-section">
+            <h2>Сайты из выдачи</h2>
+            <label class="field-label">Top‑10 URL (можно редактировать вручную)
+              <textarea id="top10-urls" name="top10_urls" rows="8" placeholder="https://example1.com\nhttps://example2.com"></textarea>
+              <span id="top10-fetch-status" class="muted hidden">Идёт сборка топ-10…</span>
+            </label>
+          </section>
+
+          <section class="form-section">
+            <details class="accordion" open>
+              <summary>Расширенные настройки</summary>
+
+              <div class="prompt-row">
+                <div><h3>Промпт 1: Анализ структуры</h3></div>
+                <button class="btn-tertiary top10-prompt-toggle" data-target="top10-prompt-1" type="button">Редактировать</button>
+              </div>
+              <textarea id="top10-prompt-1" class="prompt-field hidden" name="top10_prompt_1" rows="8" required>{{ default_top10_prompt_1 }}</textarea>
+
+              <div class="prompt-row">
+                <div><h3>Промпт 2: Предложение по структуре</h3></div>
+                <button class="btn-tertiary top10-prompt-toggle" data-target="top10-prompt-2" type="button">Редактировать</button>
+              </div>
+              <textarea id="top10-prompt-2" class="prompt-field hidden" name="top10_prompt_2" rows="8" required>{{ default_top10_prompt_2 }}</textarea>
+
+              <div class="prompt-row">
+                <div><h3>Промпт 3: Таблица блоков</h3></div>
+                <button class="btn-tertiary top10-prompt-toggle" data-target="top10-table-blocks-prompt" type="button">Редактировать</button>
+              </div>
+              <textarea id="top10-table-blocks-prompt" class="prompt-field hidden" name="top10_table_blocks_prompt" rows="8" required>{{ default_top10_table_blocks_prompt }}</textarea>
+
+              <div class="prompt-row">
+                <div><h3>Промпт 4: Таблица структуры</h3></div>
+                <button class="btn-tertiary top10-prompt-toggle" data-target="top10-table-structure-prompt" type="button">Редактировать</button>
+              </div>
+              <textarea id="top10-table-structure-prompt" class="prompt-field hidden" name="top10_table_structure_prompt" rows="8" required>{{ default_top10_table_structure_prompt }}</textarea>
+            </details>
+          </section>
+        </form>
+      </aside>
+
+      <section class="right-panel">
+        <section class="card progress-card">
+          <h2>Ход анализа</h2>
+          <div id="top10-progress-wrap" class="progress-wrap hidden">
+            <div class="progress-head">
+              <strong id="top10-progress-status">Идёт анализ…</strong>
+              <span id="top10-progress-percent">0%</span>
+            </div>
+            <div class="progress-track" aria-label="Прогресс анализа топ-10">
+              <div id="top10-progress-bar" class="progress-bar"></div>
+            </div>
+            <p id="top10-progress-eta" class="muted">Примерное время до окончания: ~02:30</p>
+          </div>
+          <div id="top10-progress-idle" class="empty-inline">Запустите анализ по top‑10.</div>
+        </section>
+
+        <section class="card report-card">
+          <div id="top10-empty-state" class="empty-state">Результаты появятся после запуска анализа.</div>
+
+          <div id="top10-result-view" class="hidden">
+            <div class="report-header">
+              <h2 id="top10-run-title">Отчёт по top‑10</h2>
+              <div class="report-actions">
+                <button id="top10-export-sheets-btn" class="btn-secondary" type="button">Отправить в таблицы</button>
+              </div>
+            </div>
+            <div id="top10-errors" class="errors hidden"></div>
+
+            <h3>Использованные URL</h3>
+            <pre id="top10-urls-used"></pre>
+
+            <div class="tab-row" role="tablist" aria-label="Вкладки отчёта top-10">
+              <button class="tab-btn top10-tab-btn active" type="button" role="tab" aria-selected="true" data-target="top10-panel-analysis">Анализ</button>
+              <button class="tab-btn top10-tab-btn" type="button" role="tab" aria-selected="false" data-target="top10-panel-structure">Предложение по структуре</button>
+            </div>
+
+            <section id="top10-panel-analysis" class="tab-panel">
+              <pre id="top10-analysis-structure"></pre>
+            </section>
+
+            <section id="top10-panel-structure" class="tab-panel hidden">
+              <pre id="top10-structure-proposal"></pre>
+            </section>
+
+            <h3>Страницы</h3>
+            <div id="top10-pages-grid" class="grid"></div>
+          </div>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/top10.js?v={{ asset_version }}" defer></script>
+</body>
+</html>

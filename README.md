@@ -1,4 +1,4 @@
-# Metrika Auditor
+# ai-аналитик
 
 Веб-приложение для автоматизированного аудита:
 1. Принимает несколько Excel-выгрузок из Яндекс.Метрики.
@@ -25,8 +25,22 @@ uvicorn app.main:app --reload
 
 ```bash
 cp .env.example .env
-# заполните OPENAI_API_KEY в .env
+# заполните OPENAI_API_KEY и (при необходимости) KEYSO_API_TOKEN / GOOGLE_SHEETS_WEBHOOK_URL в .env
 docker compose up --build
+```
+
+Откройте `http://localhost:8000`.
+
+Для запуска в фоне:
+
+```bash
+docker compose up -d --build
+```
+
+Остановить:
+
+```bash
+docker compose down
 ```
 
 ## Важные детали

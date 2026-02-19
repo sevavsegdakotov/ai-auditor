@@ -72,8 +72,18 @@ h3 {
   color: var(--text);
 }
 
-.header-action {
+.header-subtitle-row {
+  margin-top: 2px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.header-actions {
   margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .header-more {
@@ -431,6 +441,34 @@ button:focus-visible,
   color: var(--muted);
 }
 
+.tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.tab-btn {
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text);
+  padding: 0 12px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.tab-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: #f5faf9;
+}
+
+.tab-panel {
+  margin-bottom: 10px;
+}
+
 pre {
   margin: 0;
   white-space: pre-wrap;
@@ -495,6 +533,26 @@ pre {
   }
 }
 
+.help-icon-btn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+}
+
+.help-icon-btn:hover {
+  border-color: #cbd5e1;
+  color: var(--text);
+  background: #fafafa;
+}
+
 @media (max-width: 767px) {
   .page {
     padding: 14px;
@@ -506,9 +564,14 @@ pre {
 
   .actions-row,
   .report-actions,
-  .upload-row {
+  .upload-row,
+  .header-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .header-subtitle-row {
+    align-items: center;
   }
 
   .btn-primary,

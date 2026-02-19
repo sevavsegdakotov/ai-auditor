@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
+import re
 from html import escape
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import Body, FastAPI, File, Form, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from playwright.async_api import async_playwright
 
 from app.crawler import collect_page_artifacts
+from app.keyso import KeysoClient
 from app.llm import LLMClient
 from app.metrics import TopPage, dataframe_preview, parse_metrics_files
 
@@ -23,7 +27,7 @@ SCREENSHOTS_DIR = DATA_DIR / "screenshots"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="AI-аудитор сайта")
+app = FastAPI(title="ai-аналитик")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -57,6 +61,397 @@ FINAL_SUMMARY_PROMPT = """<PROMPT_FINAL_SUMMARY_v1>
 </подсказка_по_формулировкам_сегментов>
 
 </PROMPT_FINAL_SUMMARY_v1>"""
+
+COMPETITOR_MASTER_PROMPT = """МАСТЕР-ПРОМПТ (главный). Оркестратор трёх анализов с выводом в 3 вкладки + краткие выводы
+
+Роль: ты — руководитель аналитики конверсии и UX-стратег, лауреат Webby. (Роль не выводи в ответе.)
+Задача: обработать набор страниц конкурентов (скриншоты + полный текст подряд) и выдать результат в виде трёх «вкладок»:
+Вкладка 1 — анализ структуры конкурентов (без смыслов и без сборки итоговой структуры).
+Вкладка 2 — анализ смыслов/офферов (без карты блоков и без сборки итоговой структуры).
+Вкладка 3 — формирование оптимальной структуры страницы на основании Вкладок 1–2.
+
+Правило приоритета (обязательное)
+- Этот мастер-промпт имеет высший приоритет над всеми прочими промптами в системе.
+- Три промпта (структура/смыслы/итоговая структура) используй как внутренние инструкции ТОЛЬКО внутри соответствующей вкладки.
+- Запреты из промптов 1 и 2 действуют только в их вкладках и не распространяются на Вкладку 3.
+
+Входные данные
+Я передаю N страниц. Для каждой страницы:
+- URL/название
+- Скриншоты (цельные, с прокруткой)
+- Текст страницы подряд (может содержать меню/футер/повторы)
+Регион один.
+
+Режим работы (последовательно)
+1) Выполни Вкладку 1 целиком.
+2) Выполни Вкладку 2 целиком.
+3) Выполни Вкладку 3, используя результаты Вкладок 1–2 (Режим А). Режим Б допускается только если данные недостаточны для Вкладок 1–2.
+
+Общие правила (обязательные)
+- Приоритет — скриншоты. Текст подряд — для формулировок и деталей.
+- Фильтруй мусор: меню, футер, юридические строки, повторы.
+- Не оценивай визуальную «красоту».
+- Не выдумывай факты/цифры/условия. Если нет — «не указано».
+- Нормализуй блоки и смыслы (без дублей).
+- Встречаемость: X/N.
+- Форматирование: НЕ используй таблицы; только списки и подзаголовки.
+- Самодостаточность вкладок: вкладку можно прочитать отдельно; Вкладка 3 может кратко резюмировать ключевые частотности из 1–2 без полного дублирования.
+
+Критерии «редкий, но полезный блок» (для Вкладок 1 и 3)
+Блок «редкий, но полезный», если он:
+- снимает риски/возражения
+- усиливает доверие доказательствами
+- повышает конверсию
+- повышает ясность
+- ускоряет выбор
+
+ФОРМАТ ВЫВОДА: 3 ВКЛАДКИ (строго)
+
+ВКЛАДКА 1. «Структура конкурентов»
+0) Краткий вывод по структуре (обязательно)
+- 3–7 пунктов: что почти у всех, что редко, главные паттерны структуры, главные структурные проблемы/трение (без смыслов).
+
+1) Нормализованный словарь блоков (12–30)
+- Блок: единое название
+- Как распознать (1 строка)
+- Что обычно внутри (1 строка)
+
+2) Структура по каждой странице
+Для каждой страницы:
+- Блоки сверху вниз (нумерация)
+- Формат/паттерн
+- 3–5 наблюдений по структуре (без смыслов)
+
+3) Частотность блоков по массиву
+- Частые (X/N)
+- Средней частоты (X/N)
+- Редкие (X/N)
+
+Контроль качества Вкладки 1:
+- Нет смыслов/офферов/УТП.
+- Нет рекомендаций «как нам сделать» и нет итоговой структуры.
+
+ВКЛАДКА 2. «Смыслы: ценность, УТП, офферы, преимущества»
+0) Краткий вывод по смыслам (обязательно)
+- 3–7 пунктов: что чаще всего обещают, какие офферы доминируют, что уникального/редкого, где «вода» и где сильные формулировки.
+
+Теги:
+A) Ценность/результат
+B) УТП
+C) Оффер
+D) Условия
+E) Преимущества
+F) Доказательства доверия
+G) Снятие рисков/возражений
+
+1) Смыслы по каждой странице
+- Список смыслов по A–G
+- 5–10 «цитат-фрагментов» (до 12–15 слов)
+
+2) Частотный анализ смыслов по массиву
+- По A–G: категории + X/N + 1 пример
+- Редкие/уникальные: категория + X/N + почему это может быть преимуществом
+
+3) Качество формулировок
+- Топ-10 сильных
+- Топ-10 слабых + улучшение
+
+Контроль качества Вкладки 2:
+- Нет карты структуры блоков.
+- Нет сборки итоговой структуры страницы.
+
+ВКЛАДКА 3. «Оптимальная структура страницы (на основании 1–2)»
+0) Краткий вывод по предложенной структуре (обязательно)
+- 3–7 пунктов: логика сценария, какие блоки критичны, где усилили доверие/снятие рисков, какие редкие блоки добавили и зачем, ожидаемые эффекты.
+
+1) Итоговая структура (12–18 блоков)
+- Список блоков сверху вниз.
+- У каждого: обоснование + частотность/причина («частый 8/10», «редкий полезный 2/10», «закрывает риск»).
+
+2) Спецификация каждого блока (для прототипа)
+- Цель
+- Элементы
+- Смыслы/офферы (с привязкой к A–G)
+- CTA + тип конверсии
+- Формат
+
+3) Редкие блоки, которые стоит добавить
+- 5–10 пунктов: куда вставить + что внутри + какую проблему решает
+
+4) Чек-лист рисков структуры (5–10)
+- Что может «просесть» и как предотвратить
+
+Запуск
+- Не задавай вопросов.
+- Начинай анализ сразу после получения страниц.
+- Всегда указывай размер выборки N и используй X/N.
+"""
+
+COMPETITOR_PROMPT_1 = """ПРОМПТ 1. Анализ структуры страниц конкурентов (подзадача) + краткий вывод
+
+Внутренняя роль (не выводи в ответе): ведущий UX-аналитик и конверсионный исследователь, лауреат Red Dot.
+Задача: по страницам конкурентов выделить и нормализовать блоки/секции, описать структуру каждой страницы и сделать частотный срез по блокам. НЕ анализируй УТП/офферы/преимущества. НЕ предлагай итоговую структуру «нашей» страницы.
+
+Вход
+N страниц: URL/название, скриншоты, текст подряд.
+
+Правила
+- Приоритет — скриншоты; текст — для уточнений, с фильтрацией меню/футера/повторов.
+- Не оценивай «красоту дизайна».
+- Не выдумывай скрытые элементы.
+- Не используй таблицы.
+- Встречаемость: X/N.
+
+Выход (строго)
+0) Краткий вывод по структуре (обязательно)
+- 3–7 пунктов: самые частые блоки, самые редкие, типовой порядок, где чаще ставят формы/CTA, главные проблемы структуры (без смыслов).
+
+1) Нормализованный словарь блоков (12–30)
+- Единое название + как распознать + что внутри (по 1 строке).
+
+2) Структура по каждой странице
+- Блоки сверху вниз (нумерация)
+- Формат/паттерн блока
+- 3–5 наблюдений по структуре (без смыслов)
+
+3) Частотность блоков по массиву
+- Частые (X/N)
+- Средней частоты (X/N)
+- Редкие (X/N)
+
+Контроль качества
+- Нет смыслов/офферов/УТП.
+- Нет рекомендаций «как нам сделать».
+- Нет итоговой структуры.
+
+Начинай анализ сразу после получения страниц, если иное не указано мастер-промптом.
+"""
+
+COMPETITOR_PROMPT_2 = """ПРОМПТ 2. Анализ смыслов на страницах конкурентов (подзадача) + краткий вывод
+
+Внутренняя роль (не выводи в ответе): маркетинговый стратег и конверсионный копирайтер, лауреат Effie.
+Задача: извлечь и нормализовать смыслы: ценность, УТП, офферы/условия, преимущества, доказательства доверия, гарантии/снятие рисков. НЕ делай карту блоков. НЕ описывай структуру страницы. НЕ собирай итоговую структуру.
+
+Вход
+N страниц: URL/название, скриншоты, текст подряд.
+
+Правила
+- Скриншоты — источник акцентов; текст — источник формулировок и деталей. Фильтруй меню/футер/повторы.
+- Нормализуй смыслы в категории, сохраняй 1 пример формулировки.
+- Не выдумывай цифры/условия. Если нет — «не указано».
+- Не используй таблицы.
+- Встречаемость: X/N.
+
+Теги
+A) Ценность/результат
+B) УТП
+C) Оффер
+D) Условия
+E) Преимущества
+F) Доказательства доверия
+G) Снятие рисков/возражений
+
+Выход (строго)
+0) Краткий вывод по смыслам (обязательно)
+- 3–7 пунктов: доминирующие обещания/офферы, типовые условия, что чаще всего используют как доверие, что уникального, где «вода» и как улучшать.
+
+1) Смыслы по каждой странице
+- Список смыслов по A–G
+- 5–10 «цитат-фрагментов» (до 12–15 слов) с сильными формулировками
+
+2) Частотный анализ смыслов по массиву
+- По A–G: категории + X/N + 1 пример
+- Редкие/уникальные: категория + X/N + почему это может быть преимуществом
+
+3) Качество формулировок
+- Топ-10 сильных
+- Топ-10 слабых + улучшение
+
+Контроль качества
+- Нет карты блоков/структуры.
+- Нет сборки итоговой структуры страницы.
+
+Начинай анализ сразу после получения страниц, если иное не указано мастер-промптом.
+"""
+
+COMPETITOR_PROMPT_3 = """ПРОМПТ 3. Формирование оптимальной структуры страницы (подзадача) + краткий вывод
+
+Внутренняя роль (не выводи в ответе): продуктовый маркетолог и UX-архитектор, лауреат Webby.
+Задача: составить оптимальную структуру страницы (сверху вниз) и описать каждый блок так, чтобы по этому можно было собрать прототип и тексты.
+
+Вход
+Вариант А: результаты анализа структуры (блоки + X/N) и анализа смыслов (категории смыслов + X/N).
+Вариант Б: страницы конкурентов (скриншоты + текст подряд) — тогда извлеки минимально достаточные частотности коротко.
+
+Принципы сборки
+- Основа — частые блоки.
+- Добавь редкие полезные, если усиливают доверие/снятие рисков/ясность/конверсию.
+- Сценарий: что это → для кого → почему верить → как работает/что внутри → условия → доказательства → снятие рисков → CTA.
+- 3–5 точек входа (CTA) под разные намерения.
+- Не выдумывай факты/цифры: «[указать]».
+- Не используй таблицы.
+
+Выход (строго)
+0) Краткий вывод по предложенной структуре (обязательно)
+- 3–7 пунктов: какие блоки «обязательные», чем усилили доверие, какие редкие блоки добавили и зачем, как распределили CTA, где закрыли риски/возражения.
+
+1) Итоговая структура (12–18 блоков)
+- Блоки сверху вниз + обоснование («частый 8/10», «редкий полезный 2/10», «закрывает риск»).
+
+2) Спецификация каждого блока (для прототипа)
+- Цель
+- Элементы
+- Смыслы/офферы (с привязкой к A–G)
+- CTA + тип конверсии
+- Формат
+
+3) Редкие блоки, которые стоит добавить
+- 5–10 пунктов: куда вставить + что внутри + какую проблему решает
+
+4) Чек-лист рисков структуры (5–10)
+- Что может «просесть» и как предотвратить
+
+Контроль качества
+- Структура = частые + обоснованные редкие полезные.
+- Смыслы распределены по блокам и привязаны к A–G.
+- Нет выдуманных фактов/условий.
+
+Начинай работу сразу после получения входных данных, если иное не указано мастер-промптом.
+"""
+
+COMPETITOR_RUNTIME_GUARD = """Служебное уточнение для выполнения в приложении:
+- Начинай анализ сразу по переданным данным.
+- Не жди дополнительных команд пользователя («СТАРТ», «продолжай» и т.п.).
+- Не задавай встречные вопросы; если данных не хватает, явно отметь ограничения в выводе.
+- Строго соблюдай границы текущего этапа и формат ответа этого промпта.
+"""
+
+COMPETITOR_STAGE_1_GUARD = """ГРАНИЦЫ ЭТАПА 1 (обязательно):
+- Это только вкладка «Анализ сайтов» (структура).
+- Запрещено: анализ смыслов/офферов/УТП и любые рекомендации итоговой структуры.
+- Не выводи заголовки «ВКЛАДКА 1/2/3».
+- Если в черновике есть смысловые выводы, удаляй их перед финальным ответом.
+"""
+
+COMPETITOR_STAGE_2_GUARD = """ГРАНИЦЫ ЭТАПА 2 (обязательно):
+- Это только вкладка «Анализ смыслов».
+- Запрещено: карта/последовательность блоков, структура страницы, рекомендации по итоговой структуре.
+- Не выводи заголовки «ВКЛАДКА 1/2/3».
+- Если в черновике есть структурный разбор (блоки сверху вниз, паттерны секций), удаляй его перед финальным ответом.
+"""
+
+COMPETITOR_STAGE_3_GUARD = """ГРАНИЦЫ ЭТАПА 3 (обязательно):
+- Это только вкладка «Предложение по структуре».
+- Основание: результаты этапов 1 и 2.
+- Разрешены структурные рекомендации и сборка итоговой структуры.
+- Не выводи заголовки «ВКЛАДКА 1/2/3».
+"""
+
+TOP10_PROMPT_1 = """ПРОМПТ 1. Анализ структуры страниц по top-10 из поисковой выдачи
+
+Внутренняя роль (не выводи в ответе): ведущий UX-аналитик и конверсионный исследователь, лауреат Red Dot.
+Задача: по страницам из top-10 (полученным по списку поисковых запросов) выделить и нормализовать блоки/секции, описать структуру каждой страницы и сделать частотный срез по блокам.
+НЕ анализируй УТП/офферы/преимущества. НЕ предлагай итоговую структуру «нашей» страницы.
+
+Вход:
+- список поисковых запросов;
+- итоговый список URL;
+- скриншоты и текст страниц.
+
+Выход (строго):
+0) Краткий вывод по структуре (3–7 пунктов)
+1) Нормализованный словарь блоков (12–30)
+2) Структура по каждой странице
+3) Частотность блоков по массиву (X/N)
+"""
+
+TOP10_PROMPT_2 = """ПРОМПТ 2. Формирование оптимальной структуры страницы по top-10
+
+Внутренняя роль (не выводи в ответе): продуктовый маркетолог и UX-архитектор, лауреат Webby.
+Задача: на основании анализа структуры страниц из top-10 собрать оптимальную структуру страницы.
+
+Вход:
+- список поисковых запросов;
+- итоговый список URL;
+- результаты анализа структуры страниц.
+
+Выход (строго):
+0) Краткий вывод по предложенной структуре (3–7 пунктов)
+1) Итоговая структура (12–18 блоков) с обоснованием (X/N или причина)
+2) Спецификация каждого блока (цель, элементы, смыслы/офферы, CTA, формат)
+3) Редкие блоки, которые стоит добавить (5–10)
+4) Чек-лист рисков структуры (5–10)
+"""
+
+TOP10_TABLE_BLOCKS_PROMPT = """ПРОМПТ 3. Подготовка данных для табличного сравнения блоков
+
+Задача: на основании результата анализа структуры подготовь компактный вывод для таблицы в СТРОГОМ формате.
+Цель: чтобы можно было корректно сравнить сайты по единым (стандартизированным) названиям блоков.
+
+Правила:
+- Нормализуй названия блоков: одно и то же называть одинаково.
+- Убирай дубли и синонимы.
+- Без лишних объяснений и воды.
+- Используй только блоки, которые реально встречаются в анализе.
+
+Формат ответа (строго):
+Для каждого сайта:
+<полный URL сайта>
+1. <Стандартизированное название блока>
+2. <Стандартизированное название блока>
+...
+
+Требования к названиям:
+- Коротко и однозначно.
+- Одна сущность — одно имя.
+- Примеры корректных имён:
+  «Глобальная шапка», «Хлебные крошки», «Заголовок категории», «Подкатегории», «Фильтры», «Сортировка», «Счётчик товаров», «Список товаров», «Карточка товара», «Кнопка в корзину», «Пагинация», «Футер».
+"""
+
+TOP10_TABLE_STRUCTURE_PROMPT = """ПРОМПТ 4. Подготовка структуры для таблицы (блок + комментарий)
+
+Задача: на основании предложенной структуры сделать строгий список строк для таблицы:
+столбец 1 — название блока, столбец 2 — комментарий по блоку.
+
+Правила:
+- Только итоговая структура, без вступлений и без общих рассуждений.
+- Названия блоков стандартизированы и без дублей.
+- Комментарии короткие, практичные, 1 строка на блок.
+
+Формат ответа (строго):
+1. <Название блока> — <Комментарий по блоку>
+2. <Название блока> — <Комментарий по блоку>
+...
+"""
+
+TOP10_REGION_SUGGESTIONS = [
+    {"id": 213, "name": "Москва"},
+    {"id": 2, "name": "Санкт-Петербург"},
+    {"id": 50, "name": "Пермь"},
+    {"id": 54, "name": "Екатеринбург"},
+    {"id": 43, "name": "Казань"},
+    {"id": 51, "name": "Самара"},
+    {"id": 47, "name": "Нижний Новгород"},
+    {"id": 65, "name": "Новосибирск"},
+    {"id": 66, "name": "Омск"},
+    {"id": 62, "name": "Красноярск"},
+    {"id": 38, "name": "Краснодар"},
+    {"id": 56, "name": "Челябинск"},
+    {"id": 39, "name": "Ростов-на-Дону"},
+    {"id": 193, "name": "Воронеж"},
+    {"id": 194, "name": "Волгоград"},
+    {"id": 67, "name": "Томск"},
+    {"id": 53, "name": "Тюмень"},
+    {"id": 172, "name": "Уфа"},
+    {"id": 22, "name": "Владивосток"},
+    {"id": 10, "name": "Архангельск"},
+    {"id": 20, "name": "Калининград"},
+    {"id": 157, "name": "Ярославль"},
+    {"id": 7, "name": "Астрахань"},
+    {"id": 205, "name": "Ижевск"},
+    {"id": 969, "name": "Алматы"},
+    {"id": 143, "name": "Киев"},
+]
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -158,7 +553,7 @@ async def index(request: Request) -> HTMLResponse:
 </дополнительно>
 
 <формат_вывода>
-Используй каркас из SYSTEM_OUTPUT_STANDARD_v1.
+Используй каркас из SYSTEM_OUTPUT_STANDARD_v2_NO_ROLE_OUTPUT.
 В разделе «Детальный разбор» сделай блоки:
 «Источники», «Запросы», «Страницы входа», «Возвраты», «Устройства», «Топ-1 страница входа», «Портрет ЦА».
 В каждом блоке: наблюдение → интерпретация → рекомендация.
@@ -198,7 +593,7 @@ async def index(request: Request) -> HTMLResponse:
 </проверка_соответствия_страницы>
 
 <формат_вывода>
-Используй каркас из SYSTEM_OUTPUT_STANDARD_v1.
+Используй каркас из SYSTEM_OUTPUT_STANDARD_v2_NO_ROLE_OUTPUT.
 В «Детальном разборе» порядок:
 «Основной JTBD» → «Сегменты JTBD» → «Приоритеты» → «Несоответствия страницы».
 </формат_вывода>
@@ -254,7 +649,7 @@ C) Адаптивность мобильной версии
 </формат_проблем>
 
 <формат_вывода>
-Используй каркас из SYSTEM_OUTPUT_STANDARD_v1.
+Используй каркас из SYSTEM_OUTPUT_STANDARD_v2_NO_ROLE_OUTPUT.
 В «Детальном разборе» структура:
 «Общие выводы по всем страницам» → далее для каждой страницы блоки A/B/C.
 </формат_вывода>
@@ -271,98 +666,26 @@ async def competitors(request: Request) -> HTMLResponse:
         "competitors.html",
         {
             "asset_version": datetime.now().strftime("%Y%m%d%H%M%S"),
-            "default_competitor_prompt": """Роль: ты — ведущий UX-стратег и конверсионный копирайтер, лауреат D&AD.
-Задача: маркетинговый разбор страниц конкурентов по скриншотам и полному тексту (текст идёт подряд, возможны повторы/меню/подвал). Регион один.
+            "default_competitor_prompt_1": COMPETITOR_PROMPT_1,
+            "default_competitor_prompt_2": COMPETITOR_PROMPT_2,
+            "default_competitor_prompt_3": COMPETITOR_PROMPT_3,
+        },
+    )
 
-Входные данные
-Я передаю набор страниц. Для каждой страницы есть:
-1) URL/название конкурента (если есть)
-2) Скриншоты страницы (цельные, с прокруткой)
-3) Полный текст страницы подряд (как выгрузка)
 
-Цели анализа (2 задачи)
-Задача 1 (структура):
-- Выделить блоки/секции страницы (по смыслу, а не по HTML).
-- Нормализовать названия блоков (единый словарь).
-- Посчитать частотность блоков по всем страницам:
-  - «частые» (есть у большинства)
-  - «редкие, но полезные» (встречаются редко, но дают ценность/конверсию/доверие)
-- На основании этого собрать «оптимальную структуру» страницы: последовательность блоков (сверху вниз).
-
-Задача 2 (смыслы/предложения):
-- Извлечь и классифицировать смыслы:
-  - ценностное предложение (что за результат)
-  - УТП (почему именно они)
-  - офферы (что предлагают, условия, пакеты)
-  - преимущества/причины доверять (доказательства)
-- Нормализовать формулировки (объединять близкие смыслы).
-- Посчитать частотность смыслов по всем страницам:
-  - «частые»
-  - «редкие/уникальные»
-- Отдельно отметить «сильные формулировки» (короткие, конкретные, с измеримыми обещаниями/условиями) и «слабые/размытые».
-
-Правила работы с данными
-- Опирайся в первую очередь на скриншоты (они показывают реальную структуру и иерархию).
-- Текст подряд используй как источник формулировок и деталей, но фильтруй мусор: меню, футер, юридические строки, повторяющиеся элементы.
-- Если блок виден на скрине, но не читается в тексте — фиксируй по скрину.
-- Если в тексте есть смысл/оффер, но на скрине это не выражено как блок — всё равно учитывай в смыслах.
-- Не оценивай «красоту дизайна». Только структура, смысл, конверсионная логика, доверие, трение.
-- Не выдумывай факты. Если цифра/условие не указаны — так и пиши.
-
-Критерии «полезного редкого блока»
-Считай блок «редким, но полезным», если он:
-- снимает ключевые риски/возражения (гарантии, договор, сроки, ответственность)
-- усиливает доверие доказательствами (кейсы с цифрами, до/после, отзывы с деталями, лица/команда, сертификаты)
-- повышает конверсию (квиз, калькулятор, лид-магнит, «быстрый расчёт», несколько CTA под разные намерения)
-- улучшает понимание услуги (процесс/этапы, что входит/не входит, сравнение тарифов, FAQ по возражениям)
-- экономит время выбора (сравнение вариантов, чек-лист, примеры результатов, шаблоны/демо)
-
-Выходной формат (строго соблюдай)
-1) Нормализованный словарь блоков (единые названия)
-- Список 12–25 типовых блоков, которые встретились в массиве.
-- Для каждого: кратко «что внутри» (1 строка).
-
-2) Структура по каждой странице
-Для каждой страницы:
-- Список блоков сверху вниз (с нумерацией).
-- 3–5 заметок по конверсионной логике (что хорошо работает / где трение).
-- Извлечённые смыслы: УТП/офферы/преимущества (по 5–12 пунктов, без воды).
-
-3) Частотный анализ блоков (по всему набору)
-- Частые блоки: список + «встречаемость» (например: 8/10 страниц).
-- Редкие, но полезные блоки: список + «почему полезно» (1–2 строки) + «встречаемость».
-
-4) Частотный анализ смыслов (по всему набору)
-- Частые смыслы (УТП/офферы/преимущества) с группировкой и встречаемостью.
-- Редкие/уникальные смыслы: список + почему это может быть конкурентным преимуществом.
-- Топ-10 сильных формулировок (цитируй короткими фрагментами до 12–15 слов).
-- Топ-10 слабых формулировок + как переформулировать лучше (конкретнее, измеримее).
-
-5) Итог: «оптимальная структура страницы»
-- Рекомендуемая последовательность блоков (12–18 блоков) сверху вниз.
-- Для каждого блока:
-  - цель блока (1 строка)
-  - ключевые элементы (3–6 маркеров)
-  - какой смысл/оффер туда ставить (1–2 маркера)
-  - какой CTA уместен (1 вариант)
-
-6) Редкие блоки, которые стоит добавить (если уместно)
-- Список блоков, которые не у всех, но дают прирост (5–10 пунктов).
-- Для каждого: где в структуре поставить и что в нём должно быть.
-
-Проверка качества перед выдачей ответа
-- Нет дублей блоков под разными названиями (всё нормализовано).
-- Есть «встречаемость» для блоков и смыслов.
-- Итоговая структура собирается из частых блоков + добавлены редкие полезные.
-- Нигде не добавлены выдуманные условия/цифры.
-
-Далее я передам страницы в формате:
-[Страница 1]
-URL:
-Скриншоты: (изображения)
-Текст: (полный текст подряд)
-[Страница 2] ...
-Начинай анализ сразу после получения всех страниц.""",
+@app.get("/top10-structure", response_class=HTMLResponse)
+async def top10_structure(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "top10_structure.html",
+        {
+            "asset_version": datetime.now().strftime("%Y%m%d%H%M%S"),
+            "default_top10_prompt_1": TOP10_PROMPT_1,
+            "default_top10_prompt_2": TOP10_PROMPT_2,
+            "default_top10_table_blocks_prompt": TOP10_TABLE_BLOCKS_PROMPT,
+            "default_top10_table_structure_prompt": TOP10_TABLE_STRUCTURE_PROMPT,
+            "default_region_id": "225",
+            "default_region_name": "Россия",
         },
     )
 
@@ -522,17 +845,153 @@ def _parse_urls(raw: str) -> list[str]:
     return unique_urls
 
 
+def _parse_queries(raw: str) -> list[str]:
+    return [item.strip() for item in raw.splitlines() if item.strip()]
+
+
+def _top10_cache_file() -> Path:
+    return DATA_DIR / "top10_cache.json"
+
+
+def _top10_cache_key(queries: list[str], region_id: int) -> str:
+    normalized = "\n".join(query.strip().lower() for query in queries if query.strip())
+    raw = f"{region_id}|{normalized}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _load_top10_cache(queries: list[str], region_id: int) -> list[dict[str, int | str]]:
+    cache_path = _top10_cache_file()
+    if not cache_path.exists():
+        return []
+    try:
+        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    key = _top10_cache_key(queries, region_id)
+    rows = raw.get(key, []) if isinstance(raw, dict) else []
+    if not isinstance(rows, list):
+        return []
+    cleaned: list[dict[str, int | str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = str(row.get("url", "")).strip()
+        if not url:
+            continue
+        try:
+            count = int(row.get("count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        cleaned.append({"url": url, "count": count})
+    return cleaned
+
+
+def _save_top10_cache(queries: list[str], region_id: int, rows: list[dict[str, int | str]]) -> None:
+    cache_path = _top10_cache_file()
+    key = _top10_cache_key(queries, region_id)
+    data: dict[str, list[dict[str, int | str]]] = {}
+    if cache_path.exists():
+        try:
+            loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:  # noqa: BLE001
+            data = {}
+    data[key] = rows[:10]
+    cache_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _suggest_regions(raw_query: str, limit: int = 12) -> list[dict[str, int | str]]:
+    query = raw_query.strip().lower()
+    if not query:
+        return TOP10_REGION_SUGGESTIONS[:limit]
+
+    def rank(item: dict[str, int | str]) -> tuple[int, str]:
+        name = str(item["name"]).lower()
+        if name.startswith(query):
+            return (0, name)
+        if query in name:
+            return (1, name)
+        return (2, name)
+
+    matched = [item for item in TOP10_REGION_SUGGESTIONS if query in str(item["name"]).lower()]
+    matched.sort(key=rank)
+    return matched[:limit]
+
+
+@app.get("/top10-region-suggest")
+async def top10_region_suggest(q: str = Query("", min_length=0, max_length=100)) -> JSONResponse:
+    return JSONResponse(content={"items": _suggest_regions(q)})
+
+
+def _normalize_competitor_prompt(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    # Убираем инструкции для ручного чат-режима, конфликтующие с автоматическим запуском в приложении.
+    patterns = [
+        r"(?im)^.*\bжд[аи]\b.*\bстарт\b.*$",
+        r"(?im)^.*\bпосле того как я напишу\b.*$",
+        r"(?im)^.*\bдалее жди\b.*$",
+        r"(?im)^.*\bне задавай вопросов\b.*$",
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+@app.post("/top10-urls")
+async def top10_urls(
+    search_queries: str = Form(...),
+    region_id: str = Form("225"),
+    top_n: int = Form(10),
+) -> JSONResponse:
+    result = {
+        "queries": [],
+        "urls": [],
+        "errors": [],
+    }
+    queries = _parse_queries(search_queries)
+    result["queries"] = queries
+    if not queries:
+        result["errors"].append("Добавьте хотя бы один поисковый запрос.")
+        return JSONResponse(content=result)
+    try:
+        normalized_region = int((region_id or "225").strip())
+    except ValueError:
+        normalized_region = 225
+    try:
+        client = KeysoClient()
+        top_rows = await asyncio.to_thread(client.get_top_urls, queries, normalized_region, max(1, min(top_n, 10)))
+        result["urls"] = [{"url": row.url, "count": row.count} for row in top_rows]
+        if result["urls"]:
+            _save_top10_cache(queries, normalized_region, result["urls"])
+    except Exception as exc:  # noqa: BLE001
+        cached = _load_top10_cache(queries, normalized_region)
+        if cached:
+            result["urls"] = cached[: max(1, min(top_n, 10))]
+            result["errors"].append(f"{exc}. Использован кэш последней успешной выборки.")
+        else:
+            result["errors"].append(str(exc))
+    return JSONResponse(content=result)
+
+
 @app.post("/analyze-competitors")
 async def analyze_competitors(
     competitor_urls: str = Form(...),
-    competitor_prompt: str = Form(...),
+    competitor_prompt_1: str = Form(...),
+    competitor_prompt_2: str = Form(...),
+    competitor_prompt_3: str = Form(...),
 ) -> JSONResponse:
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_screens_dir = SCREENSHOTS_DIR / f"competitors_{run_id}"
     result = {
         "run_id": run_id,
         "pages": [],
-        "analysis": "",
+        "analysis_sites": "",
+        "analysis_meanings": "",
+        "structure_proposal": "",
         "errors": [],
     }
 
@@ -540,8 +999,12 @@ async def analyze_competitors(
     if not urls:
         result["errors"].append("Добавьте хотя бы одну корректную ссылку для анализа конкурентов.")
         return JSONResponse(content=result)
-    if not competitor_prompt.strip():
-        result["errors"].append("Заполните промпт для анализа конкурентов.")
+    competitor_prompt_1 = _normalize_competitor_prompt(competitor_prompt_1)
+    competitor_prompt_2 = _normalize_competitor_prompt(competitor_prompt_2)
+    competitor_prompt_3 = _normalize_competitor_prompt(competitor_prompt_3)
+
+    if not competitor_prompt_1 or not competitor_prompt_2 or not competitor_prompt_3:
+        result["errors"].append("Заполните все промпты для анализа конкурентов.")
         return JSONResponse(content=result)
 
     try:
@@ -553,13 +1016,144 @@ async def analyze_competitors(
         result["pages"] = artifacts
 
         llm = LLMClient()
-        payload = {
+        common_payload = {
             "pages": artifacts,
             "input_urls": urls,
         }
-        result["analysis"] = await llm.analyze(competitor_prompt, payload)
+        result["analysis_sites"] = await llm.analyze(
+            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_1_GUARD}\n\n{competitor_prompt_1}",
+            common_payload,
+        )
+        result["analysis_meanings"] = await llm.analyze(
+            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_2_GUARD}\n\n{competitor_prompt_2}",
+            common_payload,
+        )
+        result["structure_proposal"] = await llm.analyze(
+            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_3_GUARD}\n\n{competitor_prompt_3}",
+            {
+                **common_payload,
+                "analysis_sites": result["analysis_sites"],
+                "analysis_meanings": result["analysis_meanings"],
+            },
+        )
 
         (DATA_DIR / f"competitors_report_{run_id}.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append(str(exc))
+
+    return JSONResponse(content=result)
+
+
+@app.post("/analyze-top10-structure")
+async def analyze_top10_structure(
+    search_queries: str = Form(...),
+    region_id: str = Form("225"),
+    top10_urls: str = Form(""),
+    top10_prompt_1: str = Form(...),
+    top10_prompt_2: str = Form(...),
+    top10_table_blocks_prompt: str = Form(...),
+    top10_table_structure_prompt: str = Form(...),
+) -> JSONResponse:
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_screens_dir = SCREENSHOTS_DIR / f"top10_{run_id}"
+    result = {
+        "run_id": run_id,
+        "queries": [],
+        "urls": [],
+        "pages": [],
+        "analysis_structure": "",
+        "structure_proposal": "",
+        "table_blocks_output": "",
+        "table_structure_output": "",
+        "errors": [],
+    }
+    queries = _parse_queries(search_queries)
+    result["queries"] = queries
+    if not queries:
+        result["errors"].append("Добавьте хотя бы один поисковый запрос.")
+        return JSONResponse(content=result)
+
+    top10_prompt_1 = _normalize_competitor_prompt(top10_prompt_1)
+    top10_prompt_2 = _normalize_competitor_prompt(top10_prompt_2)
+    top10_table_blocks_prompt = _normalize_competitor_prompt(top10_table_blocks_prompt)
+    top10_table_structure_prompt = _normalize_competitor_prompt(top10_table_structure_prompt)
+    if not top10_prompt_1 or not top10_prompt_2 or not top10_table_blocks_prompt or not top10_table_structure_prompt:
+        result["errors"].append("Заполните все промпты top-10: анализ, структура и табличные форматы.")
+        return JSONResponse(content=result)
+
+    manual_urls = _parse_urls(top10_urls)
+    url_counts: list[dict[str, int | str]] = []
+    if manual_urls:
+        url_counts = [{"url": url, "count": 0} for url in manual_urls[:10]]
+    else:
+        try:
+            normalized_region = int((region_id or "225").strip())
+        except ValueError:
+            normalized_region = 225
+        try:
+            client = KeysoClient()
+            top_rows = await asyncio.to_thread(client.get_top_urls, queries, normalized_region, 10)
+            url_counts = [{"url": row.url, "count": row.count} for row in top_rows]
+            if url_counts:
+                _save_top10_cache(queries, normalized_region, url_counts)
+        except Exception as exc:  # noqa: BLE001
+            cached = _load_top10_cache(queries, normalized_region)
+            if cached:
+                url_counts = cached[:10]
+                result["errors"].append(f"{exc}. Использован кэш последней успешной выборки.")
+            else:
+                result["errors"].append(str(exc))
+                return JSONResponse(content=result)
+
+    if not url_counts:
+        result["errors"].append("Не удалось получить URL для анализа. Проверьте запросы или заполните список вручную.")
+        return JSONResponse(content=result)
+    result["urls"] = url_counts
+
+    try:
+        top_pages = [TopPage(url=str(item["url"]), visits=int(item.get("count") or 0)) for item in url_counts]
+        artifacts = await collect_page_artifacts(top_pages, run_screens_dir)
+        for item in artifacts:
+            item["desktop_screenshot"] = str(Path(item["desktop_screenshot"]).relative_to(BASE_DIR)).replace("\\", "/")
+            item["mobile_screenshot"] = str(Path(item["mobile_screenshot"]).relative_to(BASE_DIR)).replace("\\", "/")
+        result["pages"] = artifacts
+
+        llm = LLMClient()
+        common_payload = {
+            "queries": queries,
+            "top_urls": url_counts,
+            "pages": artifacts,
+        }
+        result["analysis_structure"] = await llm.analyze(
+            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_1_GUARD}\n\n{top10_prompt_1}",
+            common_payload,
+        )
+        result["structure_proposal"] = await llm.analyze(
+            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_3_GUARD}\n\n{top10_prompt_2}",
+            {
+                **common_payload,
+                "analysis_structure": result["analysis_structure"],
+            },
+        )
+        result["table_blocks_output"] = await llm.analyze(
+            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_1_GUARD}\n\n{top10_table_blocks_prompt}",
+            {
+                **common_payload,
+                "analysis_structure": result["analysis_structure"],
+            },
+        )
+        result["table_structure_output"] = await llm.analyze(
+            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_3_GUARD}\n\n{top10_table_structure_prompt}",
+            {
+                **common_payload,
+                "structure_proposal": result["structure_proposal"],
+            },
+        )
+
+        (DATA_DIR / f"top10_report_{run_id}.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -639,3 +1233,27 @@ async def report_pdf(payload: dict = Body(...)) -> Response:
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="audit_report_{run_id}.pdf"'},
     )
+
+
+@app.post("/export/google-sheets")
+async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
+    report_type = str(payload.get("report_type", "site"))
+    report_payload = payload.get("payload")
+    if not isinstance(report_payload, dict):
+        return JSONResponse(content={"errors": ["Неверный формат payload для экспорта."]}, status_code=400)
+    if report_type == "top10":
+        # Для таблицы используем отдельные, строго нормализованные представления, если они есть.
+        table_blocks = str(report_payload.get("table_blocks_output", "") or "").strip()
+        table_structure = str(report_payload.get("table_structure_output", "") or "").strip()
+        if table_blocks:
+            report_payload["analysis_structure"] = table_blocks
+        if table_structure:
+            report_payload["structure_proposal"] = table_structure
+    try:
+        from app.apps_script_sheets import AppsScriptSheetsExporter
+
+        exporter = AppsScriptSheetsExporter()
+        result = exporter.export(report_type, report_payload)
+        return JSONResponse(content=result)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(content={"errors": [str(exc)]}, status_code=400)

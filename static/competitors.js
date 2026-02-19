@@ -13,12 +13,31 @@
   const resultView = document.getElementById("comp-result-view");
   const runTitle = document.getElementById("comp-run-title");
   const errorsBox = document.getElementById("comp-errors");
-  const analysisPre = document.getElementById("comp-analysis");
+  const analysisSitesPre = document.getElementById("comp-analysis-sites");
+  const analysisMeaningsPre = document.getElementById("comp-analysis-meanings");
+  const structureProposalPre = document.getElementById("comp-structure-proposal");
   const pagesGrid = document.getElementById("comp-pages-grid");
+  const exportSheetsBtn = document.getElementById("comp-export-sheets-btn");
+
+  const headerMoreToggle = document.getElementById("header-more-toggle");
+  const headerMore = document.getElementById("header-more");
+
+  const promptToggles = document.querySelectorAll(".comp-prompt-toggle");
+  const promptAreas = [
+    document.getElementById("comp-prompt-1"),
+    document.getElementById("comp-prompt-2"),
+    document.getElementById("comp-prompt-3"),
+  ].filter(Boolean);
+
+  const tabButtons = document.querySelectorAll(".tab-btn");
+  const tabPanels = document.querySelectorAll(".tab-panel");
 
   let progressTimer = null;
   let progress = 0;
   let startTs = 0;
+  let lastEtaSeconds = null;
+  let etaBecameWorse = false;
+  let lastResult = null;
 
   const formatEta = (seconds) => {
     const safe = Math.max(0, Math.round(seconds));
@@ -29,26 +48,35 @@
 
   const updateProgress = () => {
     const elapsed = (Date.now() - startTs) / 1000;
-    const remaining = progress > 2 ? elapsed * ((100 - progress) / progress) : 140;
-    let status = "Этап 1/3: переход по сайтам";
-    if (progress >= 35) status = "Этап 2/3: скриншоты и текст";
-    if (progress >= 80) status = "Этап 3/3: финальный анализ";
+    const remaining = progress > 2 ? elapsed * ((100 - progress) / progress) : 160;
+    let status = "Этап 1/4: сбор страниц";
+    if (progress >= 30) status = "Этап 2/4: скриншоты и текст";
+    if (progress >= 60) status = "Этап 3/4: анализ структуры и смыслов";
+    if (progress >= 85) status = "Этап 4/4: предложение по структуре";
 
     progressBar.style.width = `${progress}%`;
     progressPercent.textContent = `${Math.round(progress)}%`;
     progressStatus.textContent = `${status}…`;
-    progressEta.textContent = `Примерное время до окончания: ${formatEta(remaining)}`;
+    if (lastEtaSeconds !== null && remaining > lastEtaSeconds + 1) {
+      etaBecameWorse = true;
+    }
+    lastEtaSeconds = remaining;
+    progressEta.textContent = etaBecameWorse
+      ? "Подожди ещё чутка по-братски, что-то туго идёт"
+      : `Примерное время до окончания: ${formatEta(remaining)}`;
   };
 
   const startProgress = () => {
     progress = 3;
     startTs = Date.now();
+    lastEtaSeconds = null;
+    etaBecameWorse = false;
     progressIdle.classList.add("hidden");
     progressWrap.classList.remove("hidden");
     updateProgress();
 
     progressTimer = window.setInterval(() => {
-      if (progress < 92) progress += 1.1;
+      if (progress < 92) progress += 1.05;
       updateProgress();
     }, 1000);
   };
@@ -131,12 +159,28 @@
     return article;
   };
 
+  const selectTab = (targetId) => {
+    tabButtons.forEach((btn) => {
+      const isActive = btn.dataset.target === targetId;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-selected", String(isActive));
+    });
+    tabPanels.forEach((panel) => {
+      panel.classList.toggle("hidden", panel.id !== targetId);
+    });
+  };
+
   const renderResult = (payload) => {
+    lastResult = payload;
     emptyState.classList.add("hidden");
     resultView.classList.remove("hidden");
     runTitle.textContent = `Отчёт по конкурентам ${payload.run_id || ""}`.trim();
 
-    analysisPre.textContent = payload.analysis || "";
+    analysisSitesPre.textContent = payload.analysis_sites || "";
+    analysisMeaningsPre.textContent = payload.analysis_meanings || "";
+    structureProposalPre.textContent = payload.structure_proposal || "";
+    selectTab("panel-sites");
+
     pagesGrid.replaceChildren();
     (payload.pages || []).forEach((p) => pagesGrid.appendChild(createPageCard(p)));
 
@@ -154,6 +198,38 @@
     }
   };
 
+  if (headerMoreToggle && headerMore) {
+    headerMoreToggle.addEventListener("click", () => {
+      const hidden = headerMore.classList.contains("hidden");
+      headerMore.classList.toggle("hidden", !hidden);
+      headerMoreToggle.setAttribute("aria-expanded", String(hidden));
+    });
+  }
+
+  tabButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectTab(btn.dataset.target);
+    });
+  });
+
+  promptToggles.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = document.getElementById(btn.dataset.target || "");
+      if (!target) return;
+      const hidden = target.classList.contains("hidden");
+
+      promptAreas.forEach((area) => {
+        if (area.id !== target.id) area.classList.add("hidden");
+      });
+      promptToggles.forEach((b) => {
+        if (b !== btn) b.textContent = "Редактировать";
+      });
+
+      target.classList.toggle("hidden", !hidden);
+      btn.textContent = hidden ? "Свернуть" : "Редактировать";
+    });
+  });
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     submitBtn.disabled = true;
@@ -168,16 +244,54 @@
       const payload = await response.json();
       renderResult(payload);
 
-      if (!response.ok || (payload.errors && payload.errors.length > 0 && !payload.analysis)) {
+      if (!response.ok || (payload.errors && payload.errors.length > 0 && !payload.analysis_sites && !payload.analysis_meanings && !payload.structure_proposal)) {
         failProgress();
       } else {
         completeProgress();
       }
     } catch (error) {
-      renderResult({ run_id: "", pages: [], analysis: "", errors: [String(error)] });
+      renderResult({
+        run_id: "",
+        pages: [],
+        analysis_sites: "",
+        analysis_meanings: "",
+        structure_proposal: "",
+        errors: [String(error)],
+      });
       failProgress();
     } finally {
       submitBtn.disabled = false;
     }
   });
+
+  if (exportSheetsBtn) {
+    exportSheetsBtn.addEventListener("click", async () => {
+      if (!lastResult) return;
+      exportSheetsBtn.disabled = true;
+      exportSheetsBtn.textContent = "Экспортируем…";
+      try {
+        const response = await fetch("/export/google-sheets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            report_type: "competitors",
+            payload: lastResult,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok || (payload.errors && payload.errors.length > 0)) {
+          throw new Error((payload.errors || []).join("; ") || "Ошибка экспорта");
+        }
+        window.open(payload.spreadsheet_url, "_blank", "noopener,noreferrer");
+        exportSheetsBtn.textContent = "Готово";
+      } catch (_error) {
+        exportSheetsBtn.textContent = "Ошибка";
+      } finally {
+        setTimeout(() => {
+          exportSheetsBtn.disabled = false;
+          exportSheetsBtn.textContent = "В Google Sheets";
+        }, 1500);
+      }
+    });
+  }
 })();

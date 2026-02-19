@@ -3,17 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI-аудитор сайта</title>
+  <title>ai-аналитик</title>
   <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
 </head>
 <body>
   <main class="page">
     <section class="card header-card">
-      <h1>AI-аудитор сайта</h1>
-      <p class="header-subtitle">В режиме <strong>«Аудит по ссылке»</strong> аудитор анализирует страницу по URL. В режиме <strong>«Полный аудит»</strong> сервис обрабатывает данные Метрики, выбирает топ-страницы и делает их аудит.</p>
-      <a class="btn-outline header-action" href="/competitors">Анализ конкурентов</a>
-      <button id="header-more-toggle" class="link-btn" type="button" aria-expanded="false" aria-controls="header-more">Подробнее</button>
-      <p id="header-more" class="header-more hidden">Получи ии-аудит страницы или сайта. В режиме «Аудит по ссылке» аудитор сходит на нужную страницу и сделает её анализ. В режиме «Полный аудит», аудитор обработает данные из метрики, выберет топовые по трафику страницы и сделает их анализ.</p>
+      <h1>ai-аналитик</h1>
+      <div class="header-subtitle-row">
+        <p class="header-subtitle">Сервис делает <strong>аудит сайта</strong>, <strong>анализ конкурентов</strong> и режим <strong>«Структура по топ-10»</strong> по выдаче KeySo.</p>
+        <button id="header-more-toggle" class="help-icon-btn" type="button" aria-expanded="false" aria-controls="header-more" title="Подробнее">?</button>
+      </div>
+      <div class="header-actions">
+        <a class="btn-primary" href="/">Аудит сайта</a>
+        <a class="btn-outline" href="/competitors">Анализ конкурентов</a>
+        <a class="btn-outline" href="/top10-structure">Структура по топ-10</a>
+      </div>
+      <p id="header-more" class="header-more hidden">Режим «Аудит сайта» поддерживает быстрый аудит по одной ссылке и полный аудит с Excel-выгрузками Яндекс.Метрики. Режим «Анализ конкурентов» позволяет загрузить сайты и получить разбор по вкладкам. Режим «Структура по топ-10» берет список запросов, получает частотные URL из выдачи через KeySo и строит структуру страницы.</p>
     </section>
 
     <section class="layout-grid">
@@ -145,6 +151,7 @@
               <div class="report-actions">
                 <button id="copy-report-btn" class="btn-secondary" type="button">Копировать</button>
                 <button id="download-pdf-btn" class="btn-secondary" type="button">В PDF</button>
+                <button id="export-sheets-btn" class="btn-secondary" type="button">В Google Sheets</button>
               </div>
             </div>
 
