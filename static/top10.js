@@ -1,5 +1,7 @@
 (() => {
   const form = document.getElementById("top10-form");
+  const structureMode = document.getElementById("structure-mode");
+  const top10SourceBlock = document.getElementById("top10-source-block");
   const queriesField = document.getElementById("top10-queries");
   const regionSearchField = document.getElementById("top10-region-search");
   const regionField = document.getElementById("top10-region-id");
@@ -58,7 +60,8 @@
   const updateProgress = () => {
     const elapsed = (Date.now() - startTs) / 1000;
     const remaining = progress > 2 ? elapsed * ((100 - progress) / progress) : 150;
-    let status = "Этап 1/4: получение top-10";
+    const isTop10Mode = !structureMode || structureMode.value === "top10";
+    let status = isTop10Mode ? "Этап 1/4: получение top-10" : "Этап 1/4: подготовка списка сайтов";
     if (progress >= 28) status = "Этап 2/4: скриншоты и текст";
     if (progress >= 62) status = "Этап 3/4: анализ структуры";
     if (progress >= 85) status = "Этап 4/4: предложение по структуре";
@@ -102,7 +105,7 @@
     window.setTimeout(() => {
       progressWrap.classList.add("hidden");
       progressIdle.classList.remove("hidden");
-      progressIdle.textContent = "Анализ top-10 завершён.";
+      progressIdle.textContent = "Анализ структуры завершён.";
     }, 700);
   };
 
@@ -242,7 +245,7 @@
     lastResult = payload;
     emptyState.classList.add("hidden");
     resultView.classList.remove("hidden");
-    runTitle.textContent = `Отчёт по top-10 ${payload.run_id || ""}`.trim();
+    runTitle.textContent = `Отчёт: структура по конкурентам ${payload.run_id || ""}`.trim();
     renderErrors(payload.errors || []);
 
     const urls = payload.urls || [];
@@ -258,6 +261,20 @@
     (payload.pages || []).forEach((page) => pagesGrid.appendChild(createPageCard(page)));
   };
 
+  const syncStructureMode = () => {
+    const isTop10Mode = !structureMode || structureMode.value === "top10";
+    if (top10SourceBlock) top10SourceBlock.classList.toggle("hidden", !isTop10Mode);
+    if (showBtn) showBtn.classList.toggle("hidden", !isTop10Mode);
+    if (queriesField) queriesField.required = isTop10Mode;
+    if (fetchStatus && !isTop10Mode) fetchStatus.classList.add("hidden");
+    if (progressIdle && !progressWrap.classList.contains("hidden")) return;
+    if (progressIdle) {
+      progressIdle.textContent = isTop10Mode
+        ? "Запустите анализ структуры по конкурентам."
+        : "Запустите анализ по списку сайтов.";
+    }
+  };
+
   const collectQueriesAndRegion = () => {
     const queries = (queriesField.value || "").trim();
     const parsed = parseRegionId(regionSearchField.value);
@@ -269,6 +286,9 @@
   };
 
   const showTop10 = async () => {
+    if (structureMode && structureMode.value !== "top10") {
+      return;
+    }
     const { queries, region } = collectQueriesAndRegion();
     if (!queries) {
       renderErrors(["Добавьте хотя бы один поисковый запрос."]);
@@ -358,6 +378,11 @@
   });
 
   showBtn.addEventListener("click", showTop10);
+
+  if (structureMode) {
+    structureMode.addEventListener("change", syncStructureMode);
+    syncStructureMode();
+  }
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();

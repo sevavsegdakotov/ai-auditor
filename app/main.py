@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from playwright.async_api import async_playwright
 
 from app.crawler import collect_page_artifacts
+from app.config import settings
 from app.keyso import KeysoClient
 from app.llm import LLMClient
 from app.metrics import TopPage, dataframe_preview, parse_metrics_files
@@ -317,6 +318,24 @@ COMPETITOR_PROMPT_3 = """ПРОМПТ 3. Формирование оптимал
 - Нет выдуманных фактов/условий.
 
 Начинай работу сразу после получения входных данных, если иное не указано мастер-промптом.
+"""
+
+COMPETITOR_TABLE_BLOCKS_PROMPT = """ПРОМПТ 4. Нормализованный список блоков конкурентов
+
+Задача: на основании результата «Анализ структуры» подготовить компактный нормализованный список блоков по каждому сайту для сравнения.
+
+Правила:
+- Нормализуй названия: один блок = одно единое имя.
+- Убирай дубли и синонимы.
+- Не добавляй объяснения, выводы и рекомендации.
+- Только фактические блоки, которые реально есть в анализе.
+
+Формат ответа (строго):
+Для каждого сайта:
+<полный URL сайта>
+1. <Стандартизированное название блока>
+2. <Стандартизированное название блока>
+...
 """
 
 COMPETITOR_RUNTIME_GUARD = """Служебное уточнение для выполнения в приложении:
@@ -669,6 +688,7 @@ async def competitors(request: Request) -> HTMLResponse:
             "default_competitor_prompt_1": COMPETITOR_PROMPT_1,
             "default_competitor_prompt_2": COMPETITOR_PROMPT_2,
             "default_competitor_prompt_3": COMPETITOR_PROMPT_3,
+            "default_competitor_table_blocks_prompt": COMPETITOR_TABLE_BLOCKS_PROMPT,
         },
     )
 
@@ -983,6 +1003,7 @@ async def analyze_competitors(
     competitor_prompt_1: str = Form(...),
     competitor_prompt_2: str = Form(...),
     competitor_prompt_3: str = Form(...),
+    competitor_table_blocks_prompt: str = Form(...),
 ) -> JSONResponse:
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_screens_dir = SCREENSHOTS_DIR / f"competitors_{run_id}"
@@ -990,8 +1011,10 @@ async def analyze_competitors(
         "run_id": run_id,
         "pages": [],
         "analysis_sites": "",
+        "normalized_blocks": "",
         "analysis_meanings": "",
         "structure_proposal": "",
+        "table_blocks_output": "",
         "errors": [],
     }
 
@@ -1002,8 +1025,9 @@ async def analyze_competitors(
     competitor_prompt_1 = _normalize_competitor_prompt(competitor_prompt_1)
     competitor_prompt_2 = _normalize_competitor_prompt(competitor_prompt_2)
     competitor_prompt_3 = _normalize_competitor_prompt(competitor_prompt_3)
+    competitor_table_blocks_prompt = _normalize_competitor_prompt(competitor_table_blocks_prompt)
 
-    if not competitor_prompt_1 or not competitor_prompt_2 or not competitor_prompt_3:
+    if not competitor_prompt_1 or not competitor_prompt_2 or not competitor_prompt_3 or not competitor_table_blocks_prompt:
         result["errors"].append("Заполните все промпты для анализа конкурентов.")
         return JSONResponse(content=result)
 
@@ -1024,6 +1048,14 @@ async def analyze_competitors(
             f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_1_GUARD}\n\n{competitor_prompt_1}",
             common_payload,
         )
+        result["normalized_blocks"] = await llm.analyze(
+            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_1_GUARD}\n\n{competitor_table_blocks_prompt}",
+            {
+                **common_payload,
+                "analysis_sites": result["analysis_sites"],
+            },
+        )
+        result["table_blocks_output"] = result["normalized_blocks"]
         result["analysis_meanings"] = await llm.analyze(
             f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_2_GUARD}\n\n{competitor_prompt_2}",
             common_payload,
@@ -1241,6 +1273,24 @@ async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
     report_payload = payload.get("payload")
     if not isinstance(report_payload, dict):
         return JSONResponse(content={"errors": ["Неверный формат payload для экспорта."]}, status_code=400)
+
+    webhook_url = ""
+    if report_type == "site":
+        webhook_url = settings.google_sheets_webhook_url_site.strip()
+    elif report_type == "competitors":
+        webhook_url = settings.google_sheets_webhook_url_competitors.strip()
+    elif report_type == "top10":
+        webhook_url = settings.google_sheets_webhook_url_structure.strip()
+
+    # Legacy fallback: if specific URL is not set, use generic webhook URL.
+    if not webhook_url:
+        webhook_url = settings.google_sheets_webhook_url.strip()
+
+    if not webhook_url:
+        return JSONResponse(
+            content={"errors": [f"Для инструмента report_type={report_type} не настроен webhook Google Sheets."]},
+            status_code=400,
+        )
     if report_type == "top10":
         # Для таблицы используем отдельные, строго нормализованные представления, если они есть.
         table_blocks = str(report_payload.get("table_blocks_output", "") or "").strip()
@@ -1249,10 +1299,20 @@ async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
             report_payload["analysis_structure"] = table_blocks
         if table_structure:
             report_payload["structure_proposal"] = table_structure
+    elif report_type == "competitors":
+        # Экспорт конкурентов совместим с таблицей top10: лист 1 (блоки), лист 2 (структура).
+        table_blocks = str(report_payload.get("table_blocks_output", "") or report_payload.get("normalized_blocks", "")).strip()
+        if table_blocks:
+            report_payload["analysis_structure"] = table_blocks
+        elif report_payload.get("analysis_sites"):
+            report_payload["analysis_structure"] = str(report_payload.get("analysis_sites"))
+        if report_payload.get("structure_proposal"):
+            report_payload["structure_proposal"] = str(report_payload.get("structure_proposal"))
+        report_type = "top10"
     try:
         from app.apps_script_sheets import AppsScriptSheetsExporter
 
-        exporter = AppsScriptSheetsExporter()
+        exporter = AppsScriptSheetsExporter(webhook_url=webhook_url)
         result = exporter.export(report_type, report_payload)
         return JSONResponse(content=result)
     except Exception as exc:  # noqa: BLE001

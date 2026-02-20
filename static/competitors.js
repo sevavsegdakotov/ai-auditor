@@ -14,6 +14,7 @@
   const runTitle = document.getElementById("comp-run-title");
   const errorsBox = document.getElementById("comp-errors");
   const analysisSitesPre = document.getElementById("comp-analysis-sites");
+  const normalizedBlocksPre = document.getElementById("comp-normalized-blocks");
   const analysisMeaningsPre = document.getElementById("comp-analysis-meanings");
   const structureProposalPre = document.getElementById("comp-structure-proposal");
   const pagesGrid = document.getElementById("comp-pages-grid");
@@ -27,6 +28,7 @@
     document.getElementById("comp-prompt-1"),
     document.getElementById("comp-prompt-2"),
     document.getElementById("comp-prompt-3"),
+    document.getElementById("comp-prompt-4"),
   ].filter(Boolean);
 
   const tabButtons = document.querySelectorAll(".tab-btn");
@@ -177,6 +179,7 @@
     runTitle.textContent = `Отчёт по конкурентам ${payload.run_id || ""}`.trim();
 
     analysisSitesPre.textContent = payload.analysis_sites || "";
+    normalizedBlocksPre.textContent = payload.normalized_blocks || "";
     analysisMeaningsPre.textContent = payload.analysis_meanings || "";
     structureProposalPre.textContent = payload.structure_proposal || "";
     selectTab("panel-sites");
@@ -244,7 +247,7 @@
       const payload = await response.json();
       renderResult(payload);
 
-      if (!response.ok || (payload.errors && payload.errors.length > 0 && !payload.analysis_sites && !payload.analysis_meanings && !payload.structure_proposal)) {
+      if (!response.ok || (payload.errors && payload.errors.length > 0 && !payload.analysis_sites && !payload.normalized_blocks && !payload.analysis_meanings && !payload.structure_proposal)) {
         failProgress();
       } else {
         completeProgress();
@@ -254,6 +257,7 @@
         run_id: "",
         pages: [],
         analysis_sites: "",
+        normalized_blocks: "",
         analysis_meanings: "",
         structure_proposal: "",
         errors: [String(error)],
@@ -289,7 +293,7 @@
       } finally {
         setTimeout(() => {
           exportSheetsBtn.disabled = false;
-          exportSheetsBtn.textContent = "В Google Sheets";
+          exportSheetsBtn.textContent = "Отправить в таблицы";
         }, 1500);
       }
     });

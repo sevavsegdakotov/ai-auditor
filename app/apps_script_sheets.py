@@ -14,8 +14,8 @@ from app.config import settings
 
 
 class AppsScriptSheetsExporter:
-    def __init__(self) -> None:
-        webhook_url = settings.google_sheets_webhook_url.strip()
+    def __init__(self, webhook_url: str | None = None) -> None:
+        webhook_url = (webhook_url or settings.google_sheets_webhook_url).strip()
         if not webhook_url:
             raise RuntimeError("Не задан GOOGLE_SHEETS_WEBHOOK_URL.")
         self.webhook_url = webhook_url
