@@ -1,0 +1,4 @@
+ainalytic.sevavsegdakotov.ru {
+  encode gzip
+  reverse_proxy ai-analitik:8000
+}
