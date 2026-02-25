@@ -43,6 +43,24 @@ docker compose up -d --build
 docker compose down
 ```
 
+## Автодеплой (GitHub Actions)
+
+Workflow: `.github/workflows/deploy.yml`  
+Триггеры: push в `main` и ручной запуск (`workflow_dispatch`).
+
+Добавьте в GitHub репозитория Secrets:
+
+- `VPS_HOST` — `193.176.190.9`
+- `VPS_PORT` — `22` (опционально)
+- `VPS_USER` — `dev`
+- `VPS_DEPLOY_PATH` — `/home/dev/apps/ainalytic`
+- `VPS_SSH_KEY` — приватный ключ для доступа к серверу (содержимое файла, например `~/.ssh/id_ed25519_vps`)
+
+Важно:
+
+- На сервере должен существовать `.env` в папке деплоя (`/home/dev/apps/ainalytic/.env`).
+- Workflow не перетирает `.env` и `data/`.
+
 ## Важные детали
 
 - Приложение ожидает, что в Excel есть колонки URL и посещаемости (распознаются эвристически по названиям).

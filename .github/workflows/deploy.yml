@@ -1,0 +1,64 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+      DEPLOY_HOST: ${{ secrets.VPS_HOST }}
+      DEPLOY_USER: ${{ secrets.VPS_USER }}
+      DEPLOY_PORT: ${{ secrets.VPS_PORT }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate deploy settings
+        run: |
+          test -n "$DEPLOY_PATH" || (echo "VPS_DEPLOY_PATH is required" && exit 1)
+          test -n "$DEPLOY_HOST" || (echo "VPS_HOST is required" && exit 1)
+          test -n "$DEPLOY_USER" || (echo "VPS_USER is required" && exit 1)
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          if [ -n "$DEPLOY_PORT" ]; then
+            ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          else
+            ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          fi
+
+      - name: Rsync project to server
+        run: |
+          PORT_OPT=""
+          if [ -n "$DEPLOY_PORT" ]; then PORT_OPT="-p $DEPLOY_PORT"; fi
+          RSYNC_RSH="ssh -i ~/.ssh/id_deploy $PORT_OPT"
+          rsync -az --delete \
+            --exclude ".git/" \
+            --exclude ".github/" \
+            --exclude ".venv/" \
+            --exclude "__pycache__/" \
+            --exclude ".env" \
+            --exclude "data/" \
+            -e "$RSYNC_RSH" \
+            ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Deploy with Docker Compose
+        run: |
+          PORT_OPT=""
+          if [ -n "$DEPLOY_PORT" ]; then PORT_OPT="-p $DEPLOY_PORT"; fi
+          ssh -i ~/.ssh/id_deploy $PORT_OPT "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -e
+            cd '$DEPLOY_PATH'
+            docker compose up -d --build
+            docker compose ps
+          "
