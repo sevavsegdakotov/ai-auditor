@@ -18,7 +18,9 @@ from app.crawler import collect_page_artifacts
 from app.config import settings
 from app.keyso import KeysoClient
 from app.llm import LLMClient
+from app.metrika_api import MetrikaApiError, MetrikaClient
 from app.metrics import TopPage, dataframe_preview, parse_metrics_files
+from app.site_audit_prompts import DEFAULT_SITE_PROMPTS, DEFAULT_SITE_PROMPT_ENABLED
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -481,199 +483,8 @@ async def index(request: Request) -> HTMLResponse:
         {
             "result": None,
             "asset_version": datetime.now().strftime("%Y%m%d%H%M%S"),
-            "default_role_prompt": """<SYSTEM_OUTPUT_STANDARD_v2_NO_ROLE_OUTPUT>
-
-<internal_role>
-Ты — старший веб-аналитик и UX-стратег с JTBD-подходом (Яндекс.Метрика + посадочные страницы).
-Роль используется только для качества анализа и выбора фокуса, но НЕ выводится в ответе.
-</internal_role>
-
-<principles>
-1) Пиши по-русски, корректная типографика («ёлочки», длинное тире).
-2) Кратко и структурно: только то, что влияет на решения.
-3) Любой вывод → опора на данные/наблюдение. Если цифр нет — говори «по скриншоту/по тексту видно…».
-4) Не выдумывай метрики/факты. Если данных не хватает — явно укажи, каких полей/разрезов не хватает.
-5) Избегай англицизмов; если термин нужен — дай русский аналог в скобках.
-6) Таблицы используй только если это явно повышает читаемость (иначе — списки).
-</principles>
-
-<universal_output_format>
-Всегда соблюдай следующий каркас (если секция не применима — пропусти). Важно: НЕ выводи «роль» и любые награды/самоописания.
-
-1) Краткий вывод (3–6 строк)
-— 1–2 главные находки
-— 1–2 главных риска/узких места
-— 1–2 главных действия с наибольшим эффектом
-
-2) Основание выводов
-Коротко перечисли, на чём основаны выводы:
-— какие поля/срезы в данных использованы ИЛИ
-— что именно видно на скриншотах/в тексте (цитаты/названия блоков/элементы)
-
-3) Детальный разбор (по заданной задаче)
-Выводи блоками строго по задаче. В каждом блоке:
-а) Наблюдение (что видно)
-б) Интерпретация (что это значит)
-в) Рекомендация (что менять)
-
-4) Проблемы и решения (если задача про проблемы/UX)
-Формат каждой строки строго:
-«Проблема → почему проблема → решение»
-Лимит: не более N пунктов на раздел (N задаётся в пользовательском промпте; если не задано — N=5).
-
-5) Приоритизация
-Если есть несколько рекомендаций:
-— High / Medium / Low (влияние × трудоёмкость)
-— 1–2 предложения обоснования
-
-6) Что уточнить (только если не хватает данных)
-Список из 3–7 конкретных полей/срезов/вопросов.
-</universal_output_format>
-
-<quality_bar>
-— Никакой «воды» и общих фраз.
-— Рекомендации должны быть проверяемыми и внедряемыми (что именно поменять).
-— Если просили «до 5» — не превышай.
-— Не добавляй секции, которых не просили, кроме «Что уточнить», когда реально не хватает данных.
-</quality_bar>
-
-</SYSTEM_OUTPUT_STANDARD_v2_NO_ROLE_OUTPUT>""",
-            "default_metrics_prompt": """<PROMPT_METRIKA_DATA_ANALYSIS_v1>
-
-Ты — веб-аналитик уровня senior по Яндекс.Метрике. Проанализируй приложенную выгрузку из Яндекс.Метрики по сайту и дай развёрнутые, аргументированные выводы, которые помогут определить и уточнить целевую аудиторию сайта для последующей доработки.
-
-<обязательные_блоки_анализа>
-1) Источники трафика
-— Определи каналы/источники (и кампании, если есть).
-— Выяви 3–5 ключевых паттернов, опираясь на цифры.
-
-2) Поисковые запросы
-— Проанализируй запросы.
-— Сгруппируй по намерению: «информационные», «сравнение/выбор», «покупка/заказ», «брендовые» (или эквивалентные группы по данным).
-— Выведи выводы о мотивации и ситуации пользователя.
-
-3) Страницы входа
-— Определи топовые страницы входа.
-— Объясни, что это говорит о потребностях ЦА.
-— Если в данных есть поведенческие признаки (отказы/глубина/время/конверсия) — используй их, иначе не выдумывай.
-
-4) Возвраты
-— Оцени, возвращаются ли пользователи (новые/вернувшиеся, частота — если есть в выгрузке).
-— Вывод: «разовая потребность» или «длинный выбор/повторные визиты».
-
-5) Устройства (ПК/мобайл)
-— Сравни структуру трафика и поведение на ПК и мобайле.
-— Зафиксируй различия и последствия для доработок.
-
-</обязательные_блоки_анализа>
-
-<дополнительно>
-— Выдели «топ-1 страницу входа по объёму трафика» (используй визиты/пользователей — что есть в файле) и объясни, почему она ключевая.
-</дополнительно>
-
-<формат_вывода>
-Используй каркас из SYSTEM_OUTPUT_STANDARD_v2_NO_ROLE_OUTPUT.
-В разделе «Детальный разбор» сделай блоки:
-«Источники», «Запросы», «Страницы входа», «Возвраты», «Устройства», «Топ-1 страница входа», «Портрет ЦА».
-В каждом блоке: наблюдение → интерпретация → рекомендация.
-</формат_вывода>
-
-</PROMPT_METRIKA_DATA_ANALYSIS_v1>""",
-            "default_audience_prompt": """<PROMPT_JTBD_TARGET_AUDIENCE_v1>
-
-Ты — продуктовый маркетолог и исследователь JTBD. По содержимому страницы (текст, оффер, структура блоков, цены/тарифы, формы, визуальные акценты, отзывы/кейсы) и/или по данным аналитики (источники, запросы, страницы входа, устройства, поведение) определи целевую аудиторию этой страницы и сегменты по JTBD.
-
-<задача>
-1) Сформулируй основной JTBD страницы (1–2 формулировки) в виде:
-«Когда …, я хочу …, чтобы …».
-
-2) Выдели 3–7 сегментов JTBD (разные ситуации/контексты/мотивы).
-Не сегментируй по демографии, если она не дана.
-</задача>
-
-<на_каждый_сегмент_опиши>
-— Ситуация/контекст
-— Триггер (почему сейчас)
-— Ожидаемый результат: функциональный + эмоциональный + социальный
-— Критерии выбора (3–5) и какие доказательства нужны (кейсы, цифры, примеры, гарантии и т.п.)
-— Альтернативы (как решают без нас: «сам», конкуренты, откладывание)
-— Барьеры/риски (что мешает)
-— «Фразы клиента»: 2–3 характерные формулировки запроса/сомнений
-</на_каждый_сегмент_опиши>
-
-<приоритизация>
-— Оцени важность/частоту/ценность сегмента (если нет данных — качественно, но объясни логику).
-— Выведи топ-2 приоритетных сегмента для страницы сейчас.
-</приоритизация>
-
-<проверка_соответствия_страницы>
-— Для каждого сегмента оцени соответствие страницы по шкале 0–10 и объясни оценку.
-— Укажи 3 ключевых несоответствия (где страница «не попадает» в ожидания).
-</проверка_соответствия_страницы>
-
-<формат_вывода>
-Используй каркас из SYSTEM_OUTPUT_STANDARD_v2_NO_ROLE_OUTPUT.
-В «Детальном разборе» порядок:
-«Основной JTBD» → «Сегменты JTBD» → «Приоритеты» → «Несоответствия страницы».
-</формат_вывода>
-
-</PROMPT_JTBD_TARGET_AUDIENCE_v1>""",
-            "default_pages_prompt": """<PROMPT_TOP_ENTRY_PAGES_SCREENSHOTS_UX_v1>
-
-Ты — маркетолог с JTBD-мышлением и UX-эксперт. Проанализируй скриншоты (ПК и мобайл) и текст топ-страниц входа. Цель: выявить ключевые проблемы, влияющие на понимание оффера, соответствие аудитории и удобство, и предложить конкретные доработки.
-
-<входные_данные_по_каждой_странице>
-— URL/название страницы
-— Скриншот ПК
-— Скриншот мобайл
-— Текст страницы (если есть)
-Если чего-то нет — явно укажи, что отсутствует, и не делай выводы «наугад».
-</входные_данные_по_каждой_странице>
-
-<сначала_общее>
-Сделай 5–10 тезисов по всем страницам:
-— что объединяет страницы как первые точки контакта,
-— повторяющиеся провалы/риски,
-— 2–3 доработки с максимальным эффектом.
-</сначала_общее>
-
-<затем_по_каждой_странице_отдельно>
-Разбор по 3 категориям:
-
-A) Соответствие ЦА и JTBD
-— ясность результата и «для кого»
-— релевантность обещания запросу/каналу
-— доказательства (кейсы/цифры/примеры/гарантии/сроки)
-— снятие страхов и рисков
-
-B) Общая структура и юзабилити
-— иерархия и логика блоков, первый экран
-— читаемость и когнитивная нагрузка
-— заметность и понятность призывов к действию, формы/контакты
-— доверие и прозрачность
-
-C) Адаптивность мобильной версии
-— читаемость, кликабельность, отступы
-— порядок блоков и первый экран на мобайле
-— «простыни» и скорость восприятия
-— поломки/налезания/обрезания
-
-</затем_по_каждой_странице_отдельно>
-
-<формат_проблем>
-Для каждой страницы в каждой категории выведи до 5 самых важных проблем (можно меньше, но не больше 5).
-Каждая проблема строго в формате:
-«Проблема → почему проблема → решение».
-Не перечисляй мелочи: выбирай то, что сильнее всего влияет на понимание, доверие и действие.
-</формат_проблем>
-
-<формат_вывода>
-Используй каркас из SYSTEM_OUTPUT_STANDARD_v2_NO_ROLE_OUTPUT.
-В «Детальном разборе» структура:
-«Общие выводы по всем страницам» → далее для каждой страницы блоки A/B/C.
-</формат_вывода>
-
-</PROMPT_TOP_ENTRY_PAGES_SCREENSHOTS_UX_v1>""",
+            "default_site_prompts": DEFAULT_SITE_PROMPTS,
+            "default_site_prompt_enabled": DEFAULT_SITE_PROMPT_ENABLED,
         },
     )
 
@@ -710,15 +521,84 @@ async def top10_structure(request: Request) -> HTMLResponse:
     )
 
 
+def _is_enabled(raw: str | None, default: bool = True) -> bool:
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "on", "yes"}
+
+
+def _strip_technical_notes(raw_text: str) -> tuple[str, str]:
+    text = raw_text.strip()
+    marker = "Технические заметки"
+    if marker not in text:
+        return text, ""
+    body, notes = text.split(marker, 1)
+    cleaned_notes = notes.strip().lstrip(":").strip()
+    return body.strip(), cleaned_notes
+
+
+def _validate_prompt_text(prompt_text: str, prompt_key: str) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    text = (prompt_text or "").strip()
+    lowered = text.lower()
+
+    if len(text) < 80:
+        warnings.append("слишком короткий промт — возможен слабый контроль формата")
+
+    if prompt_key == "section_3":
+        if "проблема:" not in lowered or "почему важно:" not in lowered:
+            warnings.append("в разделе UX нет явного 4-строчного формата проблемы")
+
+    if prompt_key == "section_1" and "220" not in lowered:
+        warnings.append("в саммари не зафиксирован лимит 220 слов")
+
+    leakage_markers = [
+        "используй каркас",
+        "формат вывода",
+        "ты — ",
+        "лимит:",
+        "(5–7",
+    ]
+    if not any(marker in lowered for marker in leakage_markers):
+        warnings.append("нет явных анти-утечек мета-инструкций в текст результата")
+
+    status = "ok" if not warnings else "warn"
+    return status, warnings
+
+
 async def _run_analysis(
     files: list[UploadFile] | None = File(None),
     audit_mode: str = Form("full"),
     page_url: str = Form(""),
+    metrika_counter_id: int = Form(0),
     top_n: int = Form(5),
-    role_prompt: str = Form(...),
-    metrics_prompt: str = Form(...),
-    audience_prompt: str = Form(...),
-    pages_prompt: str = Form(...),
+    prompt_contract: str = Form(""),
+    prompt_section_0: str = Form(""),
+    prompt_section_2: str = Form(""),
+    prompt_section_3: str = Form(""),
+    prompt_section_4: str = Form(""),
+    prompt_section_5: str = Form(""),
+    prompt_section_6: str = Form(""),
+    prompt_section_1: str = Form(""),
+    prompt_service_assemble: str = Form(""),
+    prompt_service_repair: str = Form(""),
+    prompt_jtbd_research: str = Form(""),
+    enabled_contract: str | None = Form(None),
+    enabled_section_0: str | None = Form(None),
+    enabled_section_2: str | None = Form(None),
+    enabled_section_3: str | None = Form(None),
+    enabled_section_4: str | None = Form(None),
+    enabled_section_5: str | None = Form(None),
+    enabled_section_6: str | None = Form(None),
+    enabled_section_1: str | None = Form(None),
+    enabled_service_assemble: str | None = Form(None),
+    enabled_service_repair: str | None = Form(None),
+    enabled_jtbd_research: str | None = Form(None),
+    # Backward compatibility with legacy fields.
+    role_prompt: str = Form(""),
+    metrics_prompt: str = Form(""),
+    audience_prompt: str = Form(""),
+    pages_prompt: str = Form(""),
 ) -> dict:
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_upload_dir = UPLOADS_DIR / run_id
@@ -728,16 +608,64 @@ async def _run_analysis(
     result = {
         "run_id": run_id,
         "audit_mode": audit_mode,
+        "metrika_counter_id": metrika_counter_id,
+        "metrika_counter_name": "",
+        "metrika_effective_period_days": None,
+        "metrika_effective_accuracy": "",
+        "metrika_query_profile": {},
         "top_pages": [],
         "final_summary": "",
         "metrics_analysis": "",
         "audience_analysis": "",
         "pages_analysis": "",
+        "report_md": "",
+        "report_sections": {},
+        "violations": "",
         "errors": [],
     }
 
     try:
         llm = LLMClient()
+        prompt_values = {
+            "contract": (prompt_contract or role_prompt or DEFAULT_SITE_PROMPTS["contract"]).strip(),
+            "section_0": (prompt_section_0 or DEFAULT_SITE_PROMPTS["section_0"]).strip(),
+            "section_2": (prompt_section_2 or metrics_prompt or DEFAULT_SITE_PROMPTS["section_2"]).strip(),
+            "section_3": (prompt_section_3 or pages_prompt or DEFAULT_SITE_PROMPTS["section_3"]).strip(),
+            "section_4": (prompt_section_4 or DEFAULT_SITE_PROMPTS["section_4"]).strip(),
+            "section_5": (prompt_section_5 or DEFAULT_SITE_PROMPTS["section_5"]).strip(),
+            "section_6": (prompt_section_6 or DEFAULT_SITE_PROMPTS["section_6"]).strip(),
+            "section_1": (prompt_section_1 or FINAL_SUMMARY_PROMPT or DEFAULT_SITE_PROMPTS["section_1"]).strip(),
+            "service_assemble": (prompt_service_assemble or DEFAULT_SITE_PROMPTS["service_assemble"]).strip(),
+            "service_repair": (prompt_service_repair or DEFAULT_SITE_PROMPTS["service_repair"]).strip(),
+            "jtbd_research": (prompt_jtbd_research or audience_prompt or DEFAULT_SITE_PROMPTS["jtbd_research"]).strip(),
+        }
+        enabled = {
+            "contract": _is_enabled(enabled_contract, DEFAULT_SITE_PROMPT_ENABLED["contract"]),
+            "section_0": _is_enabled(enabled_section_0, DEFAULT_SITE_PROMPT_ENABLED["section_0"]),
+            "section_2": _is_enabled(enabled_section_2, DEFAULT_SITE_PROMPT_ENABLED["section_2"]),
+            "section_3": _is_enabled(enabled_section_3, DEFAULT_SITE_PROMPT_ENABLED["section_3"]),
+            "section_4": _is_enabled(enabled_section_4, DEFAULT_SITE_PROMPT_ENABLED["section_4"]),
+            "section_5": _is_enabled(enabled_section_5, DEFAULT_SITE_PROMPT_ENABLED["section_5"]),
+            "section_6": _is_enabled(enabled_section_6, DEFAULT_SITE_PROMPT_ENABLED["section_6"]),
+            "section_1": _is_enabled(enabled_section_1, DEFAULT_SITE_PROMPT_ENABLED["section_1"]),
+            "service_assemble": _is_enabled(enabled_service_assemble, DEFAULT_SITE_PROMPT_ENABLED["service_assemble"]),
+            "service_repair": _is_enabled(enabled_service_repair, DEFAULT_SITE_PROMPT_ENABLED["service_repair"]),
+            "jtbd_research": _is_enabled(enabled_jtbd_research, DEFAULT_SITE_PROMPT_ENABLED["jtbd_research"]),
+        }
+
+        async def run_prompt(prompt_key: str, payload: dict) -> str:
+            base_prompt = prompt_values[prompt_key]
+            if enabled["contract"] and prompt_key != "contract":
+                system_prompt = f"{prompt_values['contract']}\n\n{base_prompt}"
+            else:
+                system_prompt = base_prompt
+            return await llm.analyze(system_prompt, payload)
+
+        combined_df = None
+        metrics_payload: dict[str, object] = {}
+        sources: list[str] = []
+        period = "не указан"
+        saved_paths: list[Path] = []
 
         if audit_mode == "screenshot":
             normalized_url = page_url.strip()
@@ -745,13 +673,42 @@ async def _run_analysis(
                 result["errors"].append("Для режима «Аудит по ссылке» укажите корректную ссылку на страницу (http/https).")
                 return result
             top_pages = [TopPage(url=normalized_url, visits=0)]
-            result["metrics_analysis"] = ""
-        else:
-            if not files:
-                result["errors"].append("Для режима «Полный аудит» загрузите Excel-файлы Метрики.")
+            metrics_payload = {"table_preview": "В данных нет метрики для режима «Аудит по ссылке».", "top_pages": []}
+            sources = ["Скриншоты desktop/mobile", "Текст страниц"]
+            period = "не применимо (аудит по ссылке)"
+        elif audit_mode == "metrika":
+            if metrika_counter_id <= 0:
+                result["errors"].append("Для режима «Аудит по Метрике» выберите счётчик.")
+                return result
+            metrika_client = MetrikaClient()
+            combined_df, top_pages, counter_meta = metrika_client.load_metrics_snapshot(
+                counter_id=metrika_counter_id,
+                top_n=top_n,
+            )
+            result["metrika_counter_id"] = counter_meta.get("counter_id", metrika_counter_id)
+            result["metrika_counter_name"] = str(counter_meta.get("counter_name", ""))
+            result["metrika_effective_period_days"] = counter_meta.get("effective_period_days")
+            result["metrika_effective_accuracy"] = str(counter_meta.get("effective_accuracy", ""))
+            result["metrika_query_profile"] = counter_meta.get("query_profile", {})
+            if not top_pages:
+                result["errors"].append("Не удалось получить топовые страницы входа из API Яндекс.Метрики.")
                 return result
 
-            saved_paths: list[Path] = []
+            metrics_payload = {
+                "source": "yandex_metrika_api",
+                "counter": counter_meta,
+                "top_pages": [{"url": item.url, "visits": item.visits} for item in top_pages],
+                "table_preview": dataframe_preview(combined_df, limit=80),
+            }
+            sources = ["Метрика API", "Скриншоты desktop/mobile", "Текст страниц"]
+            days = int(counter_meta.get("effective_period_days") or 90)
+            accuracy = str(counter_meta.get("effective_accuracy") or "full")
+            period = f"последние {days} дней (API Метрики, accuracy={accuracy})"
+        else:
+            if not files:
+                result["errors"].append("Для режима «Аудит по выгрузке» загрузите Excel-файлы Метрики.")
+                return result
+
             for upload in files:
                 target = run_upload_dir / upload.filename
                 content = await upload.read()
@@ -768,49 +725,149 @@ async def _run_analysis(
             metrics_payload = {
                 "top_pages": [{"url": item.url, "visits": item.visits} for item in top_pages],
                 "table_preview": dataframe_preview(combined_df, limit=50),
+                "files": [path.name for path in saved_paths],
             }
-            result["metrics_analysis"] = await llm.analyze(
-                f"{role_prompt}\n\nЗадача этапа 1 (анализ выгрузок):\n{metrics_prompt}",
-                metrics_payload,
-            )
+            sources = ["Выгрузки Яндекс.Метрики (Excel)", "Скриншоты desktop/mobile", "Текст страниц"]
+            period = "из загруженной выгрузки"
 
         artifacts = await collect_page_artifacts(top_pages, run_screens_dir)
         for item in artifacts:
             item["desktop_screenshot"] = str(Path(item["desktop_screenshot"]).relative_to(BASE_DIR)).replace("\\", "/")
             item["mobile_screenshot"] = str(Path(item["mobile_screenshot"]).relative_to(BASE_DIR)).replace("\\", "/")
         result["top_pages"] = artifacts
+        site = "-"
+        if artifacts:
+            try:
+                site = re.sub(r"^www\.", "", artifacts[0]["url"].split("//", 1)[1].split("/", 1)[0])
+            except Exception:  # noqa: BLE001
+                site = artifacts[0].get("url", "-")
 
-        audience_payload = {
-            "metrics_analysis": result["metrics_analysis"],
-            "top_pages": [{"url": item["url"], "visits": item["visits"]} for item in artifacts],
-            "pages": artifacts,
-        }
-        result["audience_analysis"] = await llm.analyze(
-            f"{role_prompt}\n\nЗадача этапа 2 (выделение ЦА/JTBD):\n{audience_prompt}",
-            audience_payload,
-        )
+        sections: dict[str, str] = {}
 
-        pages_payload = {
-            "metrics_analysis": result["metrics_analysis"],
-            "audience_analysis": result["audience_analysis"],
-            "pages": artifacts,
-        }
-        result["pages_analysis"] = await llm.analyze(
-            f"{role_prompt}\n\nЗадача этапа 3 (анализ страниц):\n{pages_prompt}",
-            pages_payload,
-        )
+        if enabled["section_0"]:
+            sections["0"] = await run_prompt(
+                "section_0",
+                {
+                    "site": site,
+                    "pages": [item["url"] for item in artifacts],
+                    "period": period,
+                    "sources": sources,
+                },
+            )
 
-        summary_payload = {
-            "audit_mode": audit_mode,
-            "metrics_analysis": result["metrics_analysis"],
-            "audience_analysis": result["audience_analysis"],
-            "pages_analysis": result["pages_analysis"],
-            "pages": artifacts,
-        }
-        result["final_summary"] = await llm.analyze(
-            f"{role_prompt}\n\nЗадача этапа 4 (итоговое саммари):\n{FINAL_SUMMARY_PROMPT}",
-            summary_payload,
-        )
+        if enabled["section_2"]:
+            sections["2"] = await run_prompt(
+                "section_2",
+                {
+                    "metrika_data": metrics_payload,
+                    "top_pages": [{"url": item["url"], "visits": item["visits"]} for item in artifacts],
+                },
+            )
+        result["metrics_analysis"] = sections.get("2", "")
+
+        if enabled["section_3"]:
+            sections["3"] = await run_prompt(
+                "section_3",
+                {
+                    "pages": artifacts,
+                    "screenshots_payload": [
+                        {
+                            "url": item["url"],
+                            "desktop_screenshot": item.get("desktop_screenshot", ""),
+                            "mobile_screenshot": item.get("mobile_screenshot", ""),
+                        }
+                        for item in artifacts
+                    ],
+                },
+            )
+        result["pages_analysis"] = sections.get("3", "")
+
+        if enabled["section_4"]:
+            sections["4"] = await run_prompt(
+                "section_4",
+                {
+                    "section2_md": sections.get("2", ""),
+                    "section3_md": sections.get("3", ""),
+                },
+            )
+        result["audience_analysis"] = sections.get("4", "")
+
+        if enabled["section_5"]:
+            sections["5"] = await run_prompt(
+                "section_5",
+                {
+                    "section2_md": sections.get("2", ""),
+                    "section3_md": sections.get("3", ""),
+                    "section4_md": sections.get("4", ""),
+                },
+            )
+
+        if enabled["section_6"]:
+            sections["6"] = await run_prompt(
+                "section_6",
+                {
+                    "pages": [item["url"] for item in artifacts],
+                    "screenshots_index": [
+                        {
+                            "url": item["url"],
+                            "desktop": item.get("desktop_screenshot", ""),
+                            "mobile": item.get("mobile_screenshot", ""),
+                        }
+                        for item in artifacts
+                    ],
+                    "exports_index": [path.name for path in saved_paths],
+                },
+            )
+
+        if enabled["section_1"]:
+            sections["1"] = await run_prompt(
+                "section_1",
+                {
+                    "section2_md": sections.get("2", ""),
+                    "section3_md": sections.get("3", ""),
+                    "section5_md": sections.get("5", ""),
+                },
+            )
+        result["final_summary"] = sections.get("1", "")
+
+        if enabled["jtbd_research"]:
+            result["jtbd_research"] = await run_prompt(
+                "jtbd_research",
+                {
+                    "metrika_data": metrics_payload,
+                    "pages": artifacts,
+                },
+            )
+
+        final_report_md = ""
+        if enabled["service_assemble"]:
+            final_report_md = await run_prompt(
+                "service_assemble",
+                {
+                    "site": site,
+                    "pages_count": len(artifacts),
+                    "section0_md": sections.get("0", ""),
+                    "section1_md": sections.get("1", ""),
+                    "section2_md": sections.get("2", ""),
+                    "section3_md": sections.get("3", ""),
+                    "section4_md": sections.get("4", ""),
+                    "section5_md": sections.get("5", ""),
+                    "section6_md": sections.get("6", ""),
+                },
+            )
+        else:
+            ordered = ["0", "1", "2", "3", "4", "5", "6"]
+            final_report_md = "\n\n".join(sections[key] for key in ordered if sections.get(key))
+
+        repaired_report_md = final_report_md
+        violations = ""
+        if enabled["service_repair"] and final_report_md.strip():
+            repaired_raw = await run_prompt("service_repair", {"final_report_md": final_report_md})
+            repaired_report_md, violations = _strip_technical_notes(repaired_raw)
+
+        result["report_sections"] = sections
+        result["report_md"] = repaired_report_md or final_report_md
+        result["violations"] = violations
 
         (DATA_DIR / f"report_{run_id}.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2),
@@ -827,23 +884,107 @@ async def analyze(
     files: list[UploadFile] | None = File(None),
     audit_mode: str = Form("full"),
     page_url: str = Form(""),
+    metrika_counter_id: int = Form(0),
     top_n: int = Form(5),
-    role_prompt: str = Form(...),
-    metrics_prompt: str = Form(...),
-    audience_prompt: str = Form(...),
-    pages_prompt: str = Form(...),
+    prompt_contract: str = Form(""),
+    prompt_section_0: str = Form(""),
+    prompt_section_2: str = Form(""),
+    prompt_section_3: str = Form(""),
+    prompt_section_4: str = Form(""),
+    prompt_section_5: str = Form(""),
+    prompt_section_6: str = Form(""),
+    prompt_section_1: str = Form(""),
+    prompt_service_assemble: str = Form(""),
+    prompt_service_repair: str = Form(""),
+    prompt_jtbd_research: str = Form(""),
+    enabled_contract: str | None = Form(None),
+    enabled_section_0: str | None = Form(None),
+    enabled_section_2: str | None = Form(None),
+    enabled_section_3: str | None = Form(None),
+    enabled_section_4: str | None = Form(None),
+    enabled_section_5: str | None = Form(None),
+    enabled_section_6: str | None = Form(None),
+    enabled_section_1: str | None = Form(None),
+    enabled_service_assemble: str | None = Form(None),
+    enabled_service_repair: str | None = Form(None),
+    enabled_jtbd_research: str | None = Form(None),
+    role_prompt: str = Form(""),
+    metrics_prompt: str = Form(""),
+    audience_prompt: str = Form(""),
+    pages_prompt: str = Form(""),
 ) -> JSONResponse:
     result = await _run_analysis(
         files=files,
         audit_mode=audit_mode,
         page_url=page_url,
+        metrika_counter_id=metrika_counter_id,
         top_n=top_n,
+        prompt_contract=prompt_contract,
+        prompt_section_0=prompt_section_0,
+        prompt_section_2=prompt_section_2,
+        prompt_section_3=prompt_section_3,
+        prompt_section_4=prompt_section_4,
+        prompt_section_5=prompt_section_5,
+        prompt_section_6=prompt_section_6,
+        prompt_section_1=prompt_section_1,
+        prompt_service_assemble=prompt_service_assemble,
+        prompt_service_repair=prompt_service_repair,
+        prompt_jtbd_research=prompt_jtbd_research,
+        enabled_contract=enabled_contract,
+        enabled_section_0=enabled_section_0,
+        enabled_section_2=enabled_section_2,
+        enabled_section_3=enabled_section_3,
+        enabled_section_4=enabled_section_4,
+        enabled_section_5=enabled_section_5,
+        enabled_section_6=enabled_section_6,
+        enabled_section_1=enabled_section_1,
+        enabled_service_assemble=enabled_service_assemble,
+        enabled_service_repair=enabled_service_repair,
+        enabled_jtbd_research=enabled_jtbd_research,
         role_prompt=role_prompt,
         metrics_prompt=metrics_prompt,
         audience_prompt=audience_prompt,
         pages_prompt=pages_prompt,
     )
     return JSONResponse(content=result)
+
+
+@app.get("/metrika/counters")
+async def metrika_counters() -> JSONResponse:
+    try:
+        client = MetrikaClient()
+        counters = client.list_counters()
+        payload = {
+            "items": [
+                {
+                    "id": counter.id,
+                    "name": counter.name,
+                    "site": counter.site,
+                }
+                for counter in counters
+            ],
+        }
+        return JSONResponse(content=payload)
+    except (MetrikaApiError, RuntimeError) as exc:
+        return JSONResponse(status_code=400, content={"items": [], "error": str(exc)})
+
+
+@app.post("/prompt/validate")
+async def prompt_validate(payload: dict = Body(...)) -> JSONResponse:
+    prompt_key = str(payload.get("key", "")).strip()
+    prompt_text = str(payload.get("prompt", "")).strip()
+    if not prompt_key:
+        return JSONResponse(status_code=400, content={"error": "Не передан ключ промта"})
+    if not prompt_text:
+        return JSONResponse(status_code=400, content={"error": "Промт пустой"})
+
+    status, warnings = _validate_prompt_text(prompt_text, prompt_key)
+    return JSONResponse(
+        content={
+            "status": status,
+            "warnings": warnings,
+        }
+    )
 
 
 def _parse_urls(raw: str) -> list[str]:
@@ -1196,53 +1337,136 @@ async def analyze_top10_structure(
 
 
 def _build_report_html(result: dict) -> str:
-    top_pages = result.get("top_pages") or []
-    rows = []
-    for idx, page in enumerate(top_pages, start=1):
-        rows.append(
-            "<li>"
-            f"{idx}. <b>{escape(str(page.get('url', '-')))}</b><br>"
-            f"Визиты: {escape(str(page.get('visits', '-')))}<br>"
-            f"Title: {escape(str(page.get('title', '-')))}"
-            "</li>"
+    def _md_inline(line: str) -> str:
+        text = escape(line)
+        text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+        text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+        text = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", r'<a href="\2">\1</a>', text)
+        text = re.sub(r"(https?://[^\s<]+)", r'<a href="\1">\1</a>', text)
+        return text
+
+    def _markdown_to_html(md: str) -> str:
+        lines = md.replace("\r", "").split("\n")
+        out: list[str] = []
+        in_ul = False
+        in_ol = False
+
+        def close_lists() -> None:
+            nonlocal in_ul, in_ol
+            if in_ul:
+                out.append("</ul>")
+                in_ul = False
+            if in_ol:
+                out.append("</ol>")
+                in_ol = False
+
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                close_lists()
+                continue
+
+            h2 = re.match(r"^##\s+(.+)$", line)
+            if h2:
+                close_lists()
+                out.append(f"<h2>{_md_inline(h2.group(1))}</h2>")
+                continue
+
+            h3 = re.match(r"^###\s+(.+)$", line)
+            if h3:
+                close_lists()
+                out.append(f"<h3>{_md_inline(h3.group(1))}</h3>")
+                continue
+
+            ul = re.match(r"^[-•]\s+(.+)$", line)
+            if ul:
+                if in_ol:
+                    out.append("</ol>")
+                    in_ol = False
+                if not in_ul:
+                    out.append("<ul>")
+                    in_ul = True
+                out.append(f"<li>{_md_inline(ul.group(1))}</li>")
+                continue
+
+            ol = re.match(r"^\d+\.\s+(.+)$", line)
+            if ol:
+                if in_ul:
+                    out.append("</ul>")
+                    in_ul = False
+                if not in_ol:
+                    out.append("<ol>")
+                    in_ol = True
+                out.append(f"<li>{_md_inline(ol.group(1))}</li>")
+                continue
+
+            close_lists()
+            out.append(f"<p>{_md_inline(line)}</p>")
+
+        close_lists()
+        return "".join(out)
+
+    report_md = str(result.get("report_md", "")).strip()
+    if not report_md:
+        top_pages = result.get("top_pages") or []
+        pages_lines: list[str] = []
+        for idx, page in enumerate(top_pages, start=1):
+            url = str(page.get("url", "-"))
+            visits = str(page.get("visits", "-"))
+            title = str(page.get("title", "-"))
+            pages_lines.append(f"{idx}. [{url}]({url}) — визиты: {visits}; title: {title}")
+
+        report_md = (
+            f"## 0) Паспорт отчёта\n\n"
+            f"- Run ID: {result.get('run_id', '-')}\n"
+            f"- Режим: {result.get('audit_mode', '-')}\n\n"
+            f"## 1) Саммари\n\n{result.get('final_summary', '')}\n\n"
+            f"## 2) Данные: диагностика спроса и входов\n\n{result.get('metrics_analysis', '')}\n\n"
+            f"## 3) Экспертный UX-аудит по скриншотам\n\n{result.get('pages_analysis', '')}\n\n"
+            f"## 4) Карта соответствия «интенты → посадочные → UX-узкие места»\n\n{result.get('audience_analysis', '')}\n\n"
+            f"## 5) План действий и контроль результата\n\n"
+            f"1. Сформировать backlog правок по приоритету.\n"
+            f"2. Зафиксировать KPI и контрольные точки.\n"
+            f"3. Провести повторный замер после внедрения.\n\n"
+            f"## 6) Приложения\n\n"
+            f"### Список проанализированных страниц\n"
+            f"{chr(10).join(pages_lines) if pages_lines else 'Нет страниц.'}\n"
         )
-    top_pages_html = "<ul>" + "".join(rows) + "</ul>" if rows else "<p>Нет страниц</p>"
 
-    def section(title: str, text: str) -> str:
-        if not text:
-            return ""
-        return f"<h3>{escape(title)}</h3><pre>{escape(text)}</pre>"
-
+    document_html = _markdown_to_html(report_md)
     return f"""<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <style>
-    body {{ font-family: Arial, sans-serif; margin: 24px; color: #111; }}
-    h1 {{ margin: 0 0 8px; }}
-    h2 {{ margin: 0 0 14px; color: #555; font-size: 16px; }}
-    h3 {{ margin: 18px 0 8px; }}
-    pre {{
-      white-space: pre-wrap;
-      border: 1px solid #ddd;
-      padding: 10px;
-      border-radius: 6px;
-      background: #fafafa;
-      font-family: Arial, sans-serif;
+    body {{
+      font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+      margin: 0;
+      color: #111827;
+      background: #fff;
+      font-size: 15px;
+      line-height: 1.6;
     }}
-    ul {{ margin-top: 8px; }}
-    li {{ margin-bottom: 8px; }}
+    .doc {{
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 28px;
+    }}
+    h1 {{ margin: 0 0 10px; font-size: 32px; line-height: 1.2; }}
+    h2 {{ margin: 28px 0 10px; font-size: 22px; line-height: 1.3; }}
+    h3 {{ margin: 20px 0 8px; font-size: 17px; line-height: 1.35; }}
+    p {{ margin: 10px 0; }}
+    ul, ol {{ margin: 8px 0 14px; padding-left: 22px; }}
+    li {{ margin: 6px 0; }}
+    a {{ color: #1f5f53; word-break: break-word; }}
+    code {{ background: #f3f4f6; border-radius: 4px; padding: 0 4px; }}
   </style>
 </head>
 <body>
-  <h1>Отчёт аудита сайта</h1>
-  <h2>Run ID: {escape(str(result.get("run_id", "-")))} | Режим: {escape(str(result.get("audit_mode", "-")))}</h2>
-  {section("Саммари", str(result.get("final_summary", "")))}
-  {section("Анализ метрики", str(result.get("metrics_analysis", "")))}
-  {section("Анализ ЦА / JTBD", str(result.get("audience_analysis", "")))}
-  {section("Анализ страниц и скриншотов", str(result.get("pages_analysis", "")))}
-  <h3>Топ страницы</h3>
-  {top_pages_html}
+  <main class="doc">
+    <h1>Отчёт аудита сайта</h1>
+    {document_html}
+  </main>
 </body>
 </html>"""
 

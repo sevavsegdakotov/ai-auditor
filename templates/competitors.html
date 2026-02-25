@@ -41,8 +41,12 @@
             </label>
           </section>
 
+          <div class="actions-row">
+            <button id="competitors-submit" class="btn-primary" type="submit">Анализировать конкурентов</button>
+          </div>
+
           <section class="form-section">
-            <details class="accordion" open>
+            <details class="accordion">
               <summary>Расширенные настройки</summary>
 
               <div class="prompt-row">
@@ -70,10 +74,6 @@
               <textarea id="comp-prompt-4" class="prompt-field hidden" name="competitor_table_blocks_prompt" rows="8" required>{{ default_competitor_table_blocks_prompt }}</textarea>
             </details>
           </section>
-
-          <div class="actions-row">
-            <button id="competitors-submit" class="btn-primary" type="submit">Анализировать конкурентов</button>
-          </div>
         </form>
       </aside>
 
@@ -114,19 +114,23 @@
             </div>
 
             <section id="panel-sites" class="tab-panel">
-              <pre id="comp-analysis-sites"></pre>
+              <nav id="comp-sites-toc" class="report-toc" aria-label="Навигация анализа структуры"></nav>
+              <article id="comp-analysis-sites-doc" class="report-document"></article>
             </section>
 
             <section id="panel-blocks" class="tab-panel hidden">
-              <pre id="comp-normalized-blocks"></pre>
+              <nav id="comp-blocks-toc" class="report-toc" aria-label="Навигация нормализованных блоков"></nav>
+              <article id="comp-normalized-blocks-doc" class="report-document"></article>
             </section>
 
             <section id="panel-meanings" class="tab-panel hidden">
-              <pre id="comp-analysis-meanings"></pre>
+              <nav id="comp-meanings-toc" class="report-toc" aria-label="Навигация анализа смыслов"></nav>
+              <article id="comp-analysis-meanings-doc" class="report-document"></article>
             </section>
 
             <section id="panel-structure" class="tab-panel hidden">
-              <pre id="comp-structure-proposal"></pre>
+              <nav id="comp-structure-toc" class="report-toc" aria-label="Навигация предложения по структуре"></nav>
+              <article id="comp-structure-proposal-doc" class="report-document"></article>
             </section>
 
             <h3>Страницы</h3>

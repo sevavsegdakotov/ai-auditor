@@ -25,6 +25,10 @@ class Settings:
     google_sheets_verify_ssl: bool = os.getenv("GOOGLE_SHEETS_VERIFY_SSL", "true").lower() == "true"
     base_url: str = os.getenv("BASE_URL", "http://localhost:8000")
     headless: bool = os.getenv("HEADLESS", "true").lower() == "true"
+    yandex_metrika_access_token: str = os.getenv("YANDEX_METRIKA_ACCESS_TOKEN", "")
+    yandex_metrika_client_id: str = os.getenv("YANDEX_METRIKA_CLIENT_ID", "")
+    yandex_metrika_client_secret: str = os.getenv("YANDEX_METRIKA_CLIENT_SECRET", "")
+    yandex_metrika_redirect_uri: str = os.getenv("YANDEX_METRIKA_REDIRECT_URI", "")
 
 
 settings = Settings()

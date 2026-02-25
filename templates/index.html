@@ -17,7 +17,7 @@
       <nav class="tool-nav" aria-label="Инструменты">
         <div class="tool-item">
           <a class="tool-link active" href="/">Аудит сайта</a>
-          <button class="help-icon-btn tool-help-btn" type="button" data-help-title="Аудит сайта" data-help-text="Инструмент для двух сценариев: «Аудит по ссылке» (анализ одной страницы) и «Полный аудит» (анализ выгрузок Метрики + топовых страниц со скриншотами и выводами).">?</button>
+          <button class="help-icon-btn tool-help-btn" type="button" data-help-title="Аудит сайта" data-help-text="Инструмент для трёх сценариев: «Аудит по ссылке», «Аудит по выгрузке» (Excel-выгрузки Метрики) и «Аудит по Метрике» (данные напрямую через API).">?</button>
         </div>
         <div class="tool-item">
           <a class="tool-link" href="/competitors">Анализ конкурентов</a>
@@ -36,12 +36,15 @@
         <form id="analyze-form" class="form-grid">
           <section class="form-section">
             <h2>Режим аудита</h2>
-            <label class="field-label">Выбор режима
+            <div class="field-label">Выбор режима</div>
+            <div class="mode-row">
               <select id="audit-mode" name="audit_mode">
-                <option value="full">Полный аудит</option>
+                <option value="full">Аудит по выгрузке</option>
+                <option value="metrika">Аудит по Метрике</option>
                 <option value="screenshot" selected>Аудит по ссылке</option>
               </select>
-            </label>
+            </div>
+            <p id="audit-mode-help-text" class="muted">Аудит одной страницы: скриншоты, текст, ЦА/JTBD и рекомендации.</p>
 
             <label class="field-label screenshot-only hidden">Ссылка на страницу
               <input id="page-url" type="url" name="page_url" placeholder="https://example.com/page">
@@ -71,9 +74,22 @@
             </label>
           </section>
 
+          <section class="form-section metrika-only hidden">
+            <h2>Выбрать счётчик</h2>
+            <label class="field-label">Счётчик
+              <select id="metrika-counter-id" name="metrika_counter_id">
+                <option value="">Загрузка счётчиков…</option>
+              </select>
+            </label>
+            <div class="field-help-row">
+              <span class="muted">Для подключения счётчика, открой доступ на почту adcat14@yandex.ru</span>
+            </div>
+            <p id="metrika-counter-status" class="muted hidden"></p>
+          </section>
+
           <section class="form-section">
             <h2>Параметры анализа</h2>
-            <label class="field-label full-only">Сколько страниц анализировать
+            <label class="field-label metrics-mode-only">Сколько страниц анализировать
               <select id="top-n-mode">
                 <option value="top1" selected>Топ-1</option>
                 <option value="custom">Своё число</option>
@@ -86,38 +102,184 @@
           <section class="form-section">
             <details id="advanced-settings" class="accordion">
               <summary>Расширенные настройки</summary>
-
-              <div class="prompt-row">
-                <div>
-                  <h3>Роль</h3>
+              <details class="prompt-group" open>
+                <summary>Контракт и стиль</summary>
+                <div class="prompt-row">
+                  <h3>Роль / контракт</h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_contract" {% if default_site_prompt_enabled.contract %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-contract" type="button">Редактировать</button>
                 </div>
-                <button class="btn-tertiary prompt-toggle" data-target="role-prompt" type="button">Редактировать</button>
-              </div>
-              <textarea id="role-prompt" class="prompt-field hidden" name="role_prompt" rows="10" required>{{ default_role_prompt }}</textarea>
-
-              <div class="prompt-row full-only">
-                <div>
-                  <h3>Анализ метрики</h3>
+                <textarea id="prompt-contract" class="prompt-field hidden" name="prompt_contract" rows="11">{{ default_site_prompts.contract }}</textarea>
+                <div class="prompt-actions hidden" data-actions-for="prompt-contract">
+                  <button class="btn-tertiary prompt-reset" data-key="contract" data-target="prompt-contract" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="contract" data-target="prompt-contract" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-contract"></span>
                 </div>
-                <button class="btn-tertiary prompt-toggle" data-target="metrics-prompt" type="button">Редактировать</button>
-              </div>
-              <textarea id="metrics-prompt" class="prompt-field hidden full-only" name="metrics_prompt" rows="10" required>{{ default_metrics_prompt }}</textarea>
+              </details>
 
-              <div class="prompt-row">
-                <div>
-                  <h3>Выделение ЦА/JTBD</h3>
-                </div>
-                <button class="btn-tertiary prompt-toggle" data-target="audience-prompt" type="button">Редактировать</button>
-              </div>
-              <textarea id="audience-prompt" class="prompt-field hidden" name="audience_prompt" rows="8" required>{{ default_audience_prompt }}</textarea>
+              <details class="prompt-group" open>
+                <summary>Генерация секций отчёта</summary>
 
-              <div class="prompt-row">
-                <div>
-                  <h3>Анализ страниц/скриншотов</h3>
+                <div class="prompt-row">
+                  <h3>Раздел 0: Паспорт</h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_section_0" {% if default_site_prompt_enabled.section_0 %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-section-0" type="button">Редактировать</button>
                 </div>
-                <button class="btn-tertiary prompt-toggle" data-target="pages-prompt" type="button">Редактировать</button>
-              </div>
-              <textarea id="pages-prompt" class="prompt-field hidden" name="pages_prompt" rows="12" required>{{ default_pages_prompt }}</textarea>
+                <textarea id="prompt-section-0" class="prompt-field hidden" name="prompt_section_0" rows="10">{{ default_site_prompts.section_0 }}</textarea>
+                <div class="prompt-actions hidden" data-actions-for="prompt-section-0">
+                  <button class="btn-tertiary prompt-reset" data-key="section_0" data-target="prompt-section-0" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="section_0" data-target="prompt-section-0" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-section-0"></span>
+                </div>
+
+                <div class="prompt-row metrics-mode-only">
+                  <h3>Раздел 2: Данные</h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_section_2" {% if default_site_prompt_enabled.section_2 %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-section-2" type="button">Редактировать</button>
+                </div>
+                <textarea id="prompt-section-2" class="prompt-field hidden metrics-mode-only" name="prompt_section_2" rows="14">{{ default_site_prompts.section_2 }}</textarea>
+                <div class="prompt-actions hidden metrics-mode-only" data-actions-for="prompt-section-2">
+                  <button class="btn-tertiary prompt-reset" data-key="section_2" data-target="prompt-section-2" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="section_2" data-target="prompt-section-2" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-section-2"></span>
+                </div>
+
+                <div class="prompt-row">
+                  <h3>Раздел 3: UX по скриншотам</h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_section_3" {% if default_site_prompt_enabled.section_3 %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-section-3" type="button">Редактировать</button>
+                </div>
+                <textarea id="prompt-section-3" class="prompt-field hidden" name="prompt_section_3" rows="14">{{ default_site_prompts.section_3 }}</textarea>
+                <div class="prompt-actions hidden" data-actions-for="prompt-section-3">
+                  <button class="btn-tertiary prompt-reset" data-key="section_3" data-target="prompt-section-3" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="section_3" data-target="prompt-section-3" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-section-3"></span>
+                </div>
+
+                <div class="prompt-row">
+                  <h3>Раздел 4: Карта соответствия</h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_section_4" {% if default_site_prompt_enabled.section_4 %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-section-4" type="button">Редактировать</button>
+                </div>
+                <textarea id="prompt-section-4" class="prompt-field hidden" name="prompt_section_4" rows="10">{{ default_site_prompts.section_4 }}</textarea>
+                <div class="prompt-actions hidden" data-actions-for="prompt-section-4">
+                  <button class="btn-tertiary prompt-reset" data-key="section_4" data-target="prompt-section-4" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="section_4" data-target="prompt-section-4" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-section-4"></span>
+                </div>
+
+                <div class="prompt-row">
+                  <h3>Раздел 5: План работ</h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_section_5" {% if default_site_prompt_enabled.section_5 %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-section-5" type="button">Редактировать</button>
+                </div>
+                <textarea id="prompt-section-5" class="prompt-field hidden" name="prompt_section_5" rows="10">{{ default_site_prompts.section_5 }}</textarea>
+                <div class="prompt-actions hidden" data-actions-for="prompt-section-5">
+                  <button class="btn-tertiary prompt-reset" data-key="section_5" data-target="prompt-section-5" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="section_5" data-target="prompt-section-5" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-section-5"></span>
+                </div>
+
+                <div class="prompt-row">
+                  <h3>Раздел 6: Приложения</h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_section_6" {% if default_site_prompt_enabled.section_6 %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-section-6" type="button">Редактировать</button>
+                </div>
+                <textarea id="prompt-section-6" class="prompt-field hidden" name="prompt_section_6" rows="8">{{ default_site_prompts.section_6 }}</textarea>
+                <div class="prompt-actions hidden" data-actions-for="prompt-section-6">
+                  <button class="btn-tertiary prompt-reset" data-key="section_6" data-target="prompt-section-6" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="section_6" data-target="prompt-section-6" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-section-6"></span>
+                </div>
+
+                <div class="prompt-row">
+                  <h3>Раздел 1: Саммари <span class="muted-inline">(генерируется последним)</span></h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_section_1" {% if default_site_prompt_enabled.section_1 %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-section-1" type="button">Редактировать</button>
+                </div>
+                <textarea id="prompt-section-1" class="prompt-field hidden" name="prompt_section_1" rows="12">{{ default_site_prompts.section_1 }}</textarea>
+                <div class="prompt-actions hidden" data-actions-for="prompt-section-1">
+                  <button class="btn-tertiary prompt-reset" data-key="section_1" data-target="prompt-section-1" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="section_1" data-target="prompt-section-1" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-section-1"></span>
+                </div>
+              </details>
+
+              <details class="prompt-group" open>
+                <summary>Сервисные промты</summary>
+
+                <div class="prompt-row">
+                  <h3>Сборка итогового отчёта</h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_service_assemble" {% if default_site_prompt_enabled.service_assemble %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-service-assemble" type="button">Редактировать</button>
+                </div>
+                <textarea id="prompt-service-assemble" class="prompt-field hidden" name="prompt_service_assemble" rows="14">{{ default_site_prompts.service_assemble }}</textarea>
+                <div class="prompt-actions hidden" data-actions-for="prompt-service-assemble">
+                  <button class="btn-tertiary prompt-reset" data-key="service_assemble" data-target="prompt-service-assemble" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="service_assemble" data-target="prompt-service-assemble" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-service-assemble"></span>
+                </div>
+
+                <div class="prompt-row">
+                  <h3>Проверка и авто-исправление</h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_service_repair" {% if default_site_prompt_enabled.service_repair %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-service-repair" type="button">Редактировать</button>
+                </div>
+                <textarea id="prompt-service-repair" class="prompt-field hidden" name="prompt_service_repair" rows="16">{{ default_site_prompts.service_repair }}</textarea>
+                <div class="prompt-actions hidden" data-actions-for="prompt-service-repair">
+                  <button class="btn-tertiary prompt-reset" data-key="service_repair" data-target="prompt-service-repair" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="service_repair" data-target="prompt-service-repair" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-service-repair"></span>
+                </div>
+              </details>
+
+              <details class="prompt-group">
+                <summary>Дополнительно (опционально)</summary>
+                <div class="prompt-row">
+                  <h3>JTBD-исследование</h3>
+                  <label class="switch-row">
+                    <input type="checkbox" name="enabled_jtbd_research" {% if default_site_prompt_enabled.jtbd_research %}checked{% endif %}>
+                    <span>включён</span>
+                  </label>
+                  <button class="btn-tertiary prompt-toggle" data-target="prompt-jtbd-research" type="button">Редактировать</button>
+                </div>
+                <textarea id="prompt-jtbd-research" class="prompt-field hidden" name="prompt_jtbd_research" rows="10">{{ default_site_prompts.jtbd_research }}</textarea>
+                <div class="prompt-actions hidden" data-actions-for="prompt-jtbd-research">
+                  <button class="btn-tertiary prompt-reset" data-key="jtbd_research" data-target="prompt-jtbd-research" type="button">Сбросить к шаблону</button>
+                  <button class="btn-tertiary prompt-validate" data-key="jtbd_research" data-target="prompt-jtbd-research" type="button">Проверить промт</button>
+                  <span class="prompt-validate-status" data-status-for="prompt-jtbd-research"></span>
+                </div>
+              </details>
             </details>
           </section>
 
@@ -159,32 +321,14 @@
               <div class="report-actions">
                 <button id="copy-report-btn" class="btn-secondary" type="button">Копировать</button>
                 <button id="download-pdf-btn" class="btn-secondary" type="button">В PDF</button>
-                <button id="export-sheets-btn" class="btn-secondary" type="button">В Google Sheets</button>
               </div>
             </div>
 
             <p id="report-meta" class="report-meta hidden"></p>
 
             <div id="errors-box" class="errors hidden"></div>
-
-            <div id="summary-section">
-              <h3>Саммари</h3>
-              <pre id="final-summary"></pre>
-            </div>
-
-            <div id="metrics-section">
-              <h3>Анализ метрики</h3>
-              <pre id="metrics-analysis"></pre>
-            </div>
-
-            <h3>Анализ ЦА / JTBD</h3>
-            <pre id="audience-analysis"></pre>
-
-            <h3>Анализ страниц и скриншотов</h3>
-            <pre id="pages-analysis"></pre>
-
-            <h3>Топ страницы</h3>
-            <div id="pages-grid" class="grid"></div>
+            <nav id="report-toc" class="report-toc" aria-label="Навигация по отчёту"></nav>
+            <article id="report-document" class="report-document" aria-live="polite"></article>
           </div>
         </section>
       </section>
@@ -202,6 +346,7 @@
   </div>
 
   <script src="/static/topbar-help.js?v={{ asset_version }}" defer></script>
+  <script id="site-prompts-defaults" type="application/json">{{ default_site_prompts | tojson }}</script>
   <script src="/static/app.js?v={{ asset_version }}" defer></script>
 </body>
 </html>

@@ -23,9 +23,14 @@
   const resultView = document.getElementById("top10-result-view");
   const runTitle = document.getElementById("top10-run-title");
   const errorsBox = document.getElementById("top10-errors");
-  const urlsUsedPre = document.getElementById("top10-urls-used");
-  const analysisPre = document.getElementById("top10-analysis-structure");
-  const structurePre = document.getElementById("top10-structure-proposal");
+
+  const urlsUsedDoc = document.getElementById("top10-urls-used-doc");
+  const analysisDoc = document.getElementById("top10-analysis-structure-doc");
+  const structureDoc = document.getElementById("top10-structure-proposal-doc");
+  const urlsToc = document.getElementById("top10-urls-toc");
+  const analysisToc = document.getElementById("top10-analysis-toc");
+  const structureToc = document.getElementById("top10-structure-toc");
+
   const pagesGrid = document.getElementById("top10-pages-grid");
   const exportSheetsBtn = document.getElementById("top10-export-sheets-btn");
 
@@ -49,6 +54,7 @@
   let regionFetchTimer = null;
   const regionMap = new Map();
   let lastResult = null;
+  const docObservers = new Map();
 
   const formatEta = (seconds) => {
     const safe = Math.max(0, Math.round(seconds));
@@ -69,9 +75,7 @@
     progressBar.style.width = `${progress}%`;
     progressPercent.textContent = `${Math.round(progress)}%`;
     progressStatus.textContent = `${status}…`;
-    if (lastEtaSeconds !== null && remaining > lastEtaSeconds + 1) {
-      etaBecameWorse = true;
-    }
+    if (lastEtaSeconds !== null && remaining > lastEtaSeconds + 1) etaBecameWorse = true;
     lastEtaSeconds = remaining;
     progressEta.textContent = etaBecameWorse
       ? "Подожди ещё чутка по-братски, что-то туго идёт"
@@ -138,6 +142,146 @@
     }
   };
 
+  const escapeHtml = (value) =>
+    String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+  const markdownInline = (text) => {
+    let html = escapeHtml(text);
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a class="doc-link" href="$2" target="_blank" rel="noreferrer" title="$2">$1</a>');
+    html = html.replace(/(https?:\/\/[^\s<]+)/g, '<a class="doc-link" href="$1" target="_blank" rel="noreferrer" title="$1">$1</a>');
+    return html;
+  };
+
+  const markdownBodyToHtml = (md) => {
+    const lines = String(md || "").replace(/\r/g, "").split("\n");
+    const out = [];
+    let inUl = false;
+    let inOl = false;
+
+    const closeLists = () => {
+      if (inUl) {
+        out.push("</ul>");
+        inUl = false;
+      }
+      if (inOl) {
+        out.push("</ol>");
+        inOl = false;
+      }
+    };
+
+    lines.forEach((raw) => {
+      const line = raw.trim();
+      if (!line) {
+        closeLists();
+        return;
+      }
+      const h3 = line.match(/^###\s+(.+)$/);
+      if (h3) {
+        closeLists();
+        out.push(`<h3>${markdownInline(h3[1])}</h3>`);
+        return;
+      }
+      const ul = line.match(/^[-•]\s+(.+)$/);
+      if (ul) {
+        if (inOl) {
+          out.push("</ol>");
+          inOl = false;
+        }
+        if (!inUl) {
+          out.push("<ul>");
+          inUl = true;
+        }
+        out.push(`<li>${markdownInline(ul[1])}</li>`);
+        return;
+      }
+      const ol = line.match(/^\d+\.\s+(.+)$/);
+      if (ol) {
+        if (inUl) {
+          out.push("</ul>");
+          inUl = false;
+        }
+        if (!inOl) {
+          out.push("<ol>");
+          inOl = true;
+        }
+        out.push(`<li>${markdownInline(ol[1])}</li>`);
+        return;
+      }
+      closeLists();
+      out.push(`<p>${markdownInline(line)}</p>`);
+    });
+
+    closeLists();
+    return out.join("\n");
+  };
+
+  const splitSections = (text, fallbackTitle) => {
+    const lines = String(text || "").replace(/\r/g, "").split("\n");
+    const sections = [];
+    let current = { title: fallbackTitle, lines: [] };
+    lines.forEach((line) => {
+      const h2 = line.match(/^##\s+(.+)$/);
+      if (h2) {
+        if (current.lines.length > 0 || current.title) sections.push(current);
+        current = { title: h2[1], lines: [] };
+      } else {
+        current.lines.push(line);
+      }
+    });
+    sections.push(current);
+    return sections.filter((section) => section.title || section.lines.join("").trim());
+  };
+
+  const renderDoc = (text, tocEl, docEl, fallbackTitle, key) => {
+    if (!tocEl || !docEl) return;
+    const sections = splitSections(text, fallbackTitle);
+    const items = sections.map((section, idx) => ({
+      id: `${key}-section-${idx + 1}`,
+      title: section.title || `${fallbackTitle} ${idx + 1}`,
+      body: section.lines.join("\n").trim(),
+    }));
+
+    docEl.innerHTML = items
+      .map((item) => `<section id="${item.id}" class="report-section"><h2>${escapeHtml(item.title)}</h2>${markdownBodyToHtml(item.body)}</section>`)
+      .join("\n");
+
+    tocEl.innerHTML = items
+      .map((item) => `<a href="#${item.id}" class="toc-link" data-target="${item.id}">${escapeHtml(item.title)}</a>`)
+      .join("\n");
+
+    const links = Array.from(tocEl.querySelectorAll(".toc-link"));
+    const sectionEls = Array.from(docEl.querySelectorAll(".report-section"));
+    const setActive = (id) => {
+      links.forEach((link) => link.classList.toggle("active", link.dataset.target === id));
+    };
+
+    links.forEach((link) => {
+      link.addEventListener("click", () => setActive(link.dataset.target || ""));
+    });
+
+    const prev = docObservers.get(key);
+    if (prev) prev.disconnect();
+    if (sectionEls.length === 0) return;
+
+    setActive(sectionEls[0].id);
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+        if (visible.length > 0) setActive(visible[0].target.id);
+      },
+      { rootMargin: "-18% 0px -62% 0px", threshold: [0.15, 0.3, 0.5] },
+    );
+    sectionEls.forEach((section) => observer.observe(section));
+    docObservers.set(key, observer);
+  };
+
   const parseRegionId = (value) => {
     const text = String(value || "").trim();
     if (!text) return "";
@@ -181,7 +325,7 @@
       const payload = await response.json();
       renderRegionOptions(payload.items || []);
     } catch (_error) {
-      // Молча игнорируем: поле остаётся редактируемым вручную.
+      // no-op
     }
   };
 
@@ -249,12 +393,14 @@
     renderErrors(payload.errors || []);
 
     const urls = payload.urls || [];
-    urlsUsedPre.textContent = urls.length > 0
-      ? urls.map((item, index) => `${index + 1}. ${item.url}${item.count ? ` (встречаемость: ${item.count})` : ""}`).join("\n")
-      : "";
+    const urlsText = urls.length > 0
+      ? urls.map((item, index) => `${index + 1}. [${item.url}](${item.url})${item.count ? ` — встречаемость: ${item.count}` : ""}`).join("\n")
+      : "URL не получены.";
 
-    analysisPre.textContent = payload.analysis_structure || "";
-    structurePre.textContent = payload.structure_proposal || "";
+    renderDoc(urlsText, urlsToc, urlsUsedDoc, "Использованные URL", "top10-urls");
+    renderDoc(payload.analysis_structure || "", analysisToc, analysisDoc, "Анализ", "top10-analysis");
+    renderDoc(payload.structure_proposal || "", structureToc, structureDoc, "Предложение по структуре", "top10-structure");
+
     selectTab("top10-panel-analysis");
 
     pagesGrid.replaceChildren();
@@ -286,14 +432,14 @@
   };
 
   const showTop10 = async () => {
-    if (structureMode && structureMode.value !== "top10") {
-      return;
-    }
+    if (structureMode && structureMode.value !== "top10") return;
+
     const { queries, region } = collectQueriesAndRegion();
     if (!queries) {
       renderErrors(["Добавьте хотя бы один поисковый запрос."]);
       return;
     }
+
     showBtn.disabled = true;
     buildBtn.disabled = true;
     renderErrors([]);
@@ -301,26 +447,23 @@
       fetchStatus.textContent = "Собираю топ-10…";
       fetchStatus.classList.remove("hidden");
     }
+
     try {
       const formData = new FormData();
       formData.set("search_queries", queries);
       formData.set("region_id", region || "225");
       formData.set("top_n", "10");
-      const response = await fetch("/top10-urls", {
-        method: "POST",
-        body: formData,
-      });
+      const response = await fetch("/top10-urls", { method: "POST", body: formData });
       const payload = await response.json();
       renderErrors(payload.errors || []);
+
       if (payload.urls && payload.urls.length > 0) {
         urlsField.value = payload.urls.map((row) => row.url).join("\n");
         if (fetchStatus) fetchStatus.textContent = `Готово: найдено ${payload.urls.length} URL.`;
       } else if (fetchStatus) {
-        if (payload.errors && payload.errors.length > 0) {
-          fetchStatus.textContent = payload.errors[0];
-        } else {
-          fetchStatus.textContent = "Готово: URL не найдены по этим условиям.";
-        }
+        fetchStatus.textContent = payload.errors && payload.errors.length > 0
+          ? payload.errors[0]
+          : "Готово: URL не найдены по этим условиям.";
       }
     } catch (error) {
       renderErrors([String(error)]);
@@ -377,7 +520,7 @@
     });
   });
 
-  showBtn.addEventListener("click", showTop10);
+  if (showBtn) showBtn.addEventListener("click", showTop10);
 
   if (structureMode) {
     structureMode.addEventListener("change", syncStructureMode);

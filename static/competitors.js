@@ -13,10 +13,17 @@
   const resultView = document.getElementById("comp-result-view");
   const runTitle = document.getElementById("comp-run-title");
   const errorsBox = document.getElementById("comp-errors");
-  const analysisSitesPre = document.getElementById("comp-analysis-sites");
-  const normalizedBlocksPre = document.getElementById("comp-normalized-blocks");
-  const analysisMeaningsPre = document.getElementById("comp-analysis-meanings");
-  const structureProposalPre = document.getElementById("comp-structure-proposal");
+
+  const analysisSitesDoc = document.getElementById("comp-analysis-sites-doc");
+  const normalizedBlocksDoc = document.getElementById("comp-normalized-blocks-doc");
+  const analysisMeaningsDoc = document.getElementById("comp-analysis-meanings-doc");
+  const structureProposalDoc = document.getElementById("comp-structure-proposal-doc");
+
+  const sitesToc = document.getElementById("comp-sites-toc");
+  const blocksToc = document.getElementById("comp-blocks-toc");
+  const meaningsToc = document.getElementById("comp-meanings-toc");
+  const structureToc = document.getElementById("comp-structure-toc");
+
   const pagesGrid = document.getElementById("comp-pages-grid");
   const exportSheetsBtn = document.getElementById("comp-export-sheets-btn");
 
@@ -40,6 +47,7 @@
   let lastEtaSeconds = null;
   let etaBecameWorse = false;
   let lastResult = null;
+  const docObservers = new Map();
 
   const formatEta = (seconds) => {
     const safe = Math.max(0, Math.round(seconds));
@@ -59,9 +67,7 @@
     progressBar.style.width = `${progress}%`;
     progressPercent.textContent = `${Math.round(progress)}%`;
     progressStatus.textContent = `${status}…`;
-    if (lastEtaSeconds !== null && remaining > lastEtaSeconds + 1) {
-      etaBecameWorse = true;
-    }
+    if (lastEtaSeconds !== null && remaining > lastEtaSeconds + 1) etaBecameWorse = true;
     lastEtaSeconds = remaining;
     progressEta.textContent = etaBecameWorse
       ? "Подожди ещё чутка по-братски, что-то туго идёт"
@@ -112,6 +118,147 @@
       progressIdle.classList.remove("hidden");
       progressIdle.textContent = "Анализ завершился с ошибкой.";
     }, 700);
+  };
+
+  const escapeHtml = (value) =>
+    String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+  const markdownInline = (text) => {
+    let html = escapeHtml(text);
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a class="doc-link" href="$2" target="_blank" rel="noreferrer" title="$2">$1</a>');
+    html = html.replace(/(https?:\/\/[^\s<]+)/g, '<a class="doc-link" href="$1" target="_blank" rel="noreferrer" title="$1">$1</a>');
+    return html;
+  };
+
+  const markdownBodyToHtml = (md) => {
+    const lines = String(md || "").replace(/\r/g, "").split("\n");
+    const out = [];
+    let inUl = false;
+    let inOl = false;
+
+    const closeLists = () => {
+      if (inUl) {
+        out.push("</ul>");
+        inUl = false;
+      }
+      if (inOl) {
+        out.push("</ol>");
+        inOl = false;
+      }
+    };
+
+    lines.forEach((raw) => {
+      const line = raw.trim();
+      if (!line) {
+        closeLists();
+        return;
+      }
+      const h3 = line.match(/^###\s+(.+)$/);
+      if (h3) {
+        closeLists();
+        out.push(`<h3>${markdownInline(h3[1])}</h3>`);
+        return;
+      }
+      const ul = line.match(/^[-•]\s+(.+)$/);
+      if (ul) {
+        if (inOl) {
+          out.push("</ol>");
+          inOl = false;
+        }
+        if (!inUl) {
+          out.push("<ul>");
+          inUl = true;
+        }
+        out.push(`<li>${markdownInline(ul[1])}</li>`);
+        return;
+      }
+      const ol = line.match(/^\d+\.\s+(.+)$/);
+      if (ol) {
+        if (inUl) {
+          out.push("</ul>");
+          inUl = false;
+        }
+        if (!inOl) {
+          out.push("<ol>");
+          inOl = true;
+        }
+        out.push(`<li>${markdownInline(ol[1])}</li>`);
+        return;
+      }
+      closeLists();
+      out.push(`<p>${markdownInline(line)}</p>`);
+    });
+
+    closeLists();
+    return out.join("\n");
+  };
+
+  const splitSections = (text, fallbackTitle) => {
+    const lines = String(text || "").replace(/\r/g, "").split("\n");
+    const sections = [];
+    let current = { title: fallbackTitle, lines: [] };
+
+    lines.forEach((line) => {
+      const h2 = line.match(/^##\s+(.+)$/);
+      if (h2) {
+        if (current.lines.length > 0 || current.title) sections.push(current);
+        current = { title: h2[1], lines: [] };
+      } else {
+        current.lines.push(line);
+      }
+    });
+    sections.push(current);
+    return sections.filter((section) => section.title || section.lines.join("").trim());
+  };
+
+  const renderDoc = (text, tocEl, docEl, fallbackTitle, key) => {
+    if (!tocEl || !docEl) return;
+    const sections = splitSections(text, fallbackTitle);
+    const items = sections.map((section, idx) => ({
+      id: `${key}-section-${idx + 1}`,
+      title: section.title || `${fallbackTitle} ${idx + 1}`,
+      body: section.lines.join("\n").trim(),
+    }));
+
+    docEl.innerHTML = items
+      .map((item) => `<section id="${item.id}" class="report-section"><h2>${escapeHtml(item.title)}</h2>${markdownBodyToHtml(item.body)}</section>`)
+      .join("\n");
+
+    tocEl.innerHTML = items
+      .map((item) => `<a href="#${item.id}" class="toc-link" data-target="${item.id}">${escapeHtml(item.title)}</a>`)
+      .join("\n");
+
+    const links = Array.from(tocEl.querySelectorAll(".toc-link"));
+    const sectionEls = Array.from(docEl.querySelectorAll(".report-section"));
+    const setActive = (id) => {
+      links.forEach((link) => link.classList.toggle("active", link.dataset.target === id));
+    };
+
+    links.forEach((link) => {
+      link.addEventListener("click", () => setActive(link.dataset.target || ""));
+    });
+
+    const prev = docObservers.get(key);
+    if (prev) prev.disconnect();
+    if (sectionEls.length === 0) return;
+
+    setActive(sectionEls[0].id);
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+        if (visible.length > 0) setActive(visible[0].target.id);
+      },
+      { rootMargin: "-18% 0px -62% 0px", threshold: [0.15, 0.3, 0.5] },
+    );
+    sectionEls.forEach((section) => observer.observe(section));
+    docObservers.set(key, observer);
   };
 
   const createPageCard = (page) => {
@@ -178,10 +325,10 @@
     resultView.classList.remove("hidden");
     runTitle.textContent = `Отчёт по конкурентам ${payload.run_id || ""}`.trim();
 
-    analysisSitesPre.textContent = payload.analysis_sites || "";
-    normalizedBlocksPre.textContent = payload.normalized_blocks || "";
-    analysisMeaningsPre.textContent = payload.analysis_meanings || "";
-    structureProposalPre.textContent = payload.structure_proposal || "";
+    renderDoc(payload.analysis_sites || "", sitesToc, analysisSitesDoc, "Анализ структуры", "comp-sites");
+    renderDoc(payload.normalized_blocks || "", blocksToc, normalizedBlocksDoc, "Нормализованные блоки", "comp-blocks");
+    renderDoc(payload.analysis_meanings || "", meaningsToc, analysisMeaningsDoc, "Анализ смыслов", "comp-meanings");
+    renderDoc(payload.structure_proposal || "", structureToc, structureProposalDoc, "Предложение по структуре", "comp-structure");
     selectTab("panel-sites");
 
     pagesGrid.replaceChildren();

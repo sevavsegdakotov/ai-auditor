@@ -20,20 +20,19 @@
   const downloadPdfBtn = document.getElementById("download-pdf-btn");
   const exportSheetsBtn = document.getElementById("export-sheets-btn");
 
-  const finalSummary = document.getElementById("final-summary");
-  const summarySection = document.getElementById("summary-section");
-  const metricsAnalysis = document.getElementById("metrics-analysis");
-  const metricsSection = document.getElementById("metrics-section");
-  const audienceAnalysis = document.getElementById("audience-analysis");
-  const pagesAnalysis = document.getElementById("pages-analysis");
-  const pagesGrid = document.getElementById("pages-grid");
+  const reportDocument = document.getElementById("report-document");
+  const reportToc = document.getElementById("report-toc");
 
   const headerMoreToggle = document.getElementById("header-more-toggle");
   const headerMore = document.getElementById("header-more");
 
   const auditMode = document.getElementById("audit-mode");
   const fullOnlyBlocks = document.querySelectorAll(".full-only");
+  const metrikaOnlyBlocks = document.querySelectorAll(".metrika-only");
+  const metricsModeOnlyBlocks = document.querySelectorAll(".metrics-mode-only");
   const screenshotOnlyBlocks = document.querySelectorAll(".screenshot-only");
+  const metrikaCounterSelect = document.getElementById("metrika-counter-id");
+  const metrikaCounterStatus = document.getElementById("metrika-counter-status");
 
   const filesInput = document.getElementById("files-input");
   const filePickerBtn = document.getElementById("file-picker-btn");
@@ -43,21 +42,49 @@
   const filesHelp = document.getElementById("files-help");
 
   const pageUrlInput = document.getElementById("page-url");
+  const auditModeHelpText = document.getElementById("audit-mode-help-text");
 
   const topNMode = document.getElementById("top-n-mode");
   const customTopN = document.getElementById("custom-top-n");
   const topNValue = document.getElementById("top-n-value");
 
-  const rolePromptField = document.getElementById("role-prompt");
-  const metricsPromptField = document.getElementById("metrics-prompt");
-  const audiencePromptField = document.getElementById("audience-prompt");
-  const pagesPromptField = document.getElementById("pages-prompt");
+  const promptDefaultsNode = document.getElementById("site-prompts-defaults");
+  const promptDefaults = (() => {
+    if (!promptDefaultsNode) return {};
+    try {
+      return JSON.parse(promptDefaultsNode.textContent || "{}");
+    } catch (error) {
+      return {};
+    }
+  })();
+  const promptFields = Array.from(document.querySelectorAll(".prompt-field"));
   const promptToggles = document.querySelectorAll(".prompt-toggle");
+  const promptResetButtons = document.querySelectorAll(".prompt-reset");
+  const promptValidateButtons = document.querySelectorAll(".prompt-validate");
+
+  const modeHelpMap = {
+    screenshot: "Аудит одной страницы: скриншоты, текст, ЦА/JTBD и рекомендации.",
+    full: "Анализ по Excel-выгрузкам Метрики: выбор топ-страниц, скриншоты и итоговый аудит.",
+    metrika: "Анализ напрямую по API Яндекс.Метрики: выбор счётчика, топ-страницы и полный аудит без Excel.",
+  };
+
+  const reportSectionTitles = [
+    "0) Паспорт отчёта",
+    "1) Саммари",
+    "2) Данные: диагностика спроса и входов",
+    "3) Экспертный UX-аудит по скриншотам",
+    "4) Карта соответствия «интенты → посадочные → UX-узкие места»",
+    "5) План действий и контроль результата",
+    "6) Приложения",
+  ];
 
   let progressTimer = null;
   let progress = 0;
   let startTs = 0;
   let lastResult = null;
+  let reportBundle = { report_md: "", report_text: "", sections: [] };
+  let metrikaCountersLoaded = false;
+  let tocObserver = null;
 
   const fullStageTimeline = [
     { limit: 20, text: "Этап 1/5: загрузка файлов", step: 1 },
@@ -74,8 +101,19 @@
     { limit: 98, text: "Этап 4/5: рекомендации", step: 5 },
   ];
 
+  const metrikaStageTimeline = [
+    { limit: 25, text: "Этап 1/5: загрузка данных из API Метрики", step: 1 },
+    { limit: 45, text: "Этап 2/5: выбор страниц", step: 2 },
+    { limit: 67, text: "Этап 3/5: скриншоты", step: 3 },
+    { limit: 84, text: "Этап 4/5: извлечение текста", step: 4 },
+    { limit: 98, text: "Этап 5/5: рекомендации", step: 5 },
+  ];
+
   const getCurrentTimeline = () => {
-    return auditMode && auditMode.value === "screenshot" ? screenshotStageTimeline : fullStageTimeline;
+    if (!auditMode) return fullStageTimeline;
+    if (auditMode.value === "screenshot") return screenshotStageTimeline;
+    if (auditMode.value === "metrika") return metrikaStageTimeline;
+    return fullStageTimeline;
   };
 
   const formatEta = (seconds) => {
@@ -83,6 +121,33 @@
     const mm = String(Math.floor(safe / 60)).padStart(2, "0");
     const ss = String(safe % 60).padStart(2, "0");
     return `~${mm}:${ss}`;
+  };
+
+  const escapeHtml = (value) =>
+    String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+  const cleanAiText = (text) => {
+    const source = String(text || "").replace(/\r/g, "");
+    const lines = source.split("\n");
+    const cleaned = lines
+      .filter((line) => !/^\s*<\/?[A-Z0-9_\-]+[^>]*>\s*$/.test(line.trim()))
+      .filter((line) => !/^\s*```/.test(line.trim()));
+    return cleaned.join("\n").trim();
+  };
+
+  const shortenUrl = (url) => {
+    try {
+      const parsed = new URL(url);
+      const short = `${parsed.hostname}${parsed.pathname}`;
+      return short.length > 72 ? `${short.slice(0, 69)}...` : short;
+    } catch (error) {
+      return url.length > 72 ? `${url.slice(0, 69)}...` : url;
+    }
   };
 
   const updateStepUi = (stepIndex) => {
@@ -163,9 +228,10 @@
   const applyTopN = (value) => {
     const n = Math.max(1, Math.min(30, Number(value) || 1));
     topNValue.value = String(n);
-    if (metricsPromptField) metricsPromptField.value = updateTopNInPrompt(metricsPromptField.value, n);
-    if (audiencePromptField) audiencePromptField.value = updateTopNInPrompt(audiencePromptField.value, n);
-    if (pagesPromptField) pagesPromptField.value = updateTopNInPrompt(pagesPromptField.value, n);
+    const section2Prompt = document.getElementById("prompt-section-2");
+    const section1Prompt = document.getElementById("prompt-section-1");
+    if (section2Prompt) section2Prompt.value = updateTopNInPrompt(section2Prompt.value, n);
+    if (section1Prompt) section1Prompt.value = updateTopNInPrompt(section1Prompt.value, Math.min(5, n));
   };
 
   const syncTopNMode = () => {
@@ -182,13 +248,18 @@
   const syncAuditMode = () => {
     if (!auditMode) return;
     const isFull = auditMode.value === "full";
+    const isMetrika = auditMode.value === "metrika";
+    const isScreenshot = auditMode.value === "screenshot";
     fullOnlyBlocks.forEach((el) => el.classList.toggle("hidden", !isFull));
-    screenshotOnlyBlocks.forEach((el) => el.classList.toggle("hidden", isFull));
+    metrikaOnlyBlocks.forEach((el) => el.classList.toggle("hidden", !isMetrika));
+    metricsModeOnlyBlocks.forEach((el) => el.classList.toggle("hidden", isScreenshot));
+    screenshotOnlyBlocks.forEach((el) => el.classList.toggle("hidden", !isScreenshot));
 
     if (filesInput) filesInput.required = isFull;
-    if (pageUrlInput) pageUrlInput.required = !isFull;
+    if (pageUrlInput) pageUrlInput.required = isScreenshot;
+    if (metrikaCounterSelect) metrikaCounterSelect.required = isMetrika;
 
-    if (!isFull) {
+    if (isScreenshot) {
       topNMode.value = "top1";
       customTopN.classList.add("hidden");
       applyTopN(1);
@@ -196,8 +267,57 @@
       syncTopNMode();
     }
 
-    if (metricsSection) {
-      metricsSection.classList.toggle("hidden", !isFull);
+    if (auditModeHelpText) {
+      auditModeHelpText.textContent = modeHelpMap[auditMode.value] || "";
+    }
+
+    if (isMetrika && !metrikaCountersLoaded) {
+      loadMetrikaCounters();
+    }
+  };
+
+  const loadMetrikaCounters = async () => {
+    if (!metrikaCounterSelect) return;
+    metrikaCounterSelect.innerHTML = "<option value=''>Загрузка счётчиков…</option>";
+    if (metrikaCounterStatus) {
+      metrikaCounterStatus.classList.add("hidden");
+      metrikaCounterStatus.textContent = "";
+    }
+
+    try {
+      const response = await fetch("/metrika/counters");
+      const payload = await response.json();
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      metrikaCounterSelect.replaceChildren();
+
+      const defaultOption = document.createElement("option");
+      defaultOption.value = "";
+      defaultOption.textContent = items.length > 0 ? "Выберите счётчик" : "Счётчики не найдены";
+      metrikaCounterSelect.appendChild(defaultOption);
+
+      items.forEach((item) => {
+        const option = document.createElement("option");
+        option.value = String(item.id);
+        option.textContent = `${item.name} (${item.id})${item.site ? ` — ${item.site}` : ""}`;
+        metrikaCounterSelect.appendChild(option);
+      });
+
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || "Не удалось загрузить счётчики");
+      }
+      metrikaCountersLoaded = true;
+    } catch (error) {
+      metrikaCountersLoaded = false;
+      if (metrikaCounterStatus) {
+        metrikaCounterStatus.textContent = `Ошибка загрузки счётчиков: ${String(error)}`;
+        metrikaCounterStatus.classList.remove("hidden");
+      }
+      if (metrikaCounterSelect.options.length === 0) {
+        const failedOption = document.createElement("option");
+        failedOption.value = "";
+        failedOption.textContent = "Не удалось загрузить";
+        metrikaCounterSelect.appendChild(failedOption);
+      }
     }
   };
 
@@ -217,11 +337,14 @@
   const togglePromptEditor = (targetId, button) => {
     const target = document.getElementById(targetId);
     if (!target) return;
+    const actions = document.querySelector(`[data-actions-for="${targetId}"]`);
     const isHidden = target.classList.contains("hidden");
 
-    [rolePromptField, metricsPromptField, audiencePromptField, pagesPromptField].forEach((field) => {
+    promptFields.forEach((field) => {
       if (!field || field.id === targetId) return;
       field.classList.add("hidden");
+      const fieldActions = document.querySelector(`[data-actions-for="${field.id}"]`);
+      if (fieldActions) fieldActions.classList.add("hidden");
     });
 
     promptToggles.forEach((btn) => {
@@ -230,58 +353,241 @@
     });
 
     target.classList.toggle("hidden", !isHidden);
+    if (actions) actions.classList.toggle("hidden", !isHidden);
     button.textContent = isHidden ? "Свернуть" : "Редактировать";
   };
 
-  const createPageCard = (page) => {
-    const article = document.createElement("article");
-    article.className = "page-card";
+  const markdownInline = (text) => {
+    let html = escapeHtml(text);
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label, href) => {
+      const full = String(href);
+      const shortLabel = label === href ? shortenUrl(full) : label;
+      return `<a class=\"doc-link\" href=\"${escapeHtml(full)}\" target=\"_blank\" rel=\"noreferrer\" title=\"${escapeHtml(full)}\" data-full-url=\"${escapeHtml(full)}\">${escapeHtml(shortLabel)}</a><button class=\"url-copy-btn\" type=\"button\" data-full-url=\"${escapeHtml(full)}\">коп.</button>`;
+    });
+    html = html.replace(/(https?:\/\/[^\s<]+)/g, (href) => {
+      const full = String(href);
+      const short = shortenUrl(full);
+      return `<a class=\"doc-link\" href=\"${escapeHtml(full)}\" target=\"_blank\" rel=\"noreferrer\" title=\"${escapeHtml(full)}\" data-full-url=\"${escapeHtml(full)}\">${escapeHtml(short)}</a><button class=\"url-copy-btn\" type=\"button\" data-full-url=\"${escapeHtml(full)}\">коп.</button>`;
+    });
+    return html;
+  };
 
-    const title = document.createElement("h4");
-    const link = document.createElement("a");
-    link.href = page.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    link.textContent = page.url;
-    title.appendChild(link);
+  const markdownBodyToHtml = (md) => {
+    const lines = String(md || "").replace(/\r/g, "").split("\n");
+    const out = [];
+    let inUl = false;
+    let inOl = false;
 
-    const visits = document.createElement("p");
-    visits.innerHTML = `<b>Визиты:</b> ${page.visits}`;
+    const closeLists = () => {
+      if (inUl) {
+        out.push("</ul>");
+        inUl = false;
+      }
+      if (inOl) {
+        out.push("</ol>");
+        inOl = false;
+      }
+    };
 
-    const pageTitle = document.createElement("p");
-    pageTitle.innerHTML = `<b>Title:</b> ${page.title || "-"}`;
+    lines.forEach((raw) => {
+      const line = raw.trim();
+      if (!line) {
+        closeLists();
+        return;
+      }
 
-    const details = document.createElement("details");
-    const summary = document.createElement("summary");
-    summary.textContent = "Текст страницы";
-    const txt = document.createElement("p");
-    txt.textContent = page.text_excerpt || "Нет текста";
-    details.appendChild(summary);
-    details.appendChild(txt);
+      const h3 = line.match(/^###\s+(.+)$/);
+      if (h3) {
+        closeLists();
+        out.push(`<h3>${markdownInline(h3[1])}</h3>`);
+        return;
+      }
 
-    const shots = document.createElement("div");
-    shots.className = "shots";
+      const ul = line.match(/^[-•]\s+(.+)$/);
+      if (ul) {
+        if (inOl) {
+          out.push("</ol>");
+          inOl = false;
+        }
+        if (!inUl) {
+          out.push("<ul>");
+          inUl = true;
+        }
+        out.push(`<li>${markdownInline(ul[1])}</li>`);
+        return;
+      }
 
-    const desktop = document.createElement("a");
-    desktop.href = `/${page.desktop_screenshot}`;
-    desktop.target = "_blank";
-    desktop.textContent = "Desktop screenshot";
+      const ol = line.match(/^\d+\.\s+(.+)$/);
+      if (ol) {
+        if (inUl) {
+          out.push("</ul>");
+          inUl = false;
+        }
+        if (!inOl) {
+          out.push("<ol>");
+          inOl = true;
+        }
+        out.push(`<li>${markdownInline(ol[1])}</li>`);
+        return;
+      }
 
-    const mobile = document.createElement("a");
-    mobile.href = `/${page.mobile_screenshot}`;
-    mobile.target = "_blank";
-    mobile.textContent = "Mobile screenshot";
+      closeLists();
+      out.push(`<p>${markdownInline(line)}</p>`);
+    });
 
-    shots.appendChild(desktop);
-    shots.appendChild(mobile);
+    closeLists();
+    return out.join("\n");
+  };
 
-    article.appendChild(title);
-    article.appendChild(visits);
-    article.appendChild(pageTitle);
-    article.appendChild(details);
-    article.appendChild(shots);
+  const markdownToPlain = (md) =>
+    String(md || "")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1 ($2)")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\r/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
 
-    return article;
+  const slugifySection = (title) =>
+    String(title || "")
+      .toLowerCase()
+      .replace(/<[^>]+>/g, "")
+      .replace(/[^a-zа-яё0-9]+/gi, "-")
+      .replace(/^-+|-+$/g, "") || "section";
+
+  const parseMarkdownSections = (reportMd) => {
+    const lines = String(reportMd || "").replace(/\r/g, "").split("\n");
+    const sections = [];
+    let current = null;
+    lines.forEach((line) => {
+      const h2 = line.match(/^##\s+(.+)$/);
+      if (h2) {
+        if (current) sections.push(current);
+        const title = h2[1].trim();
+        current = {
+          id: `section-${slugifySection(title)}`,
+          title,
+          md: "",
+        };
+        return;
+      }
+      if (current) {
+        current.md += `${line}\n`;
+      }
+    });
+    if (current) sections.push(current);
+    return sections.map((section) => ({ ...section, md: section.md.trim() }));
+  };
+
+  const buildStructuredReport = (result) => {
+    const reportMd = cleanAiText(result.report_md || "");
+    const sectionsFromMd = parseMarkdownSections(reportMd);
+    if (reportMd && sectionsFromMd.length > 0) {
+      return {
+        sections: sectionsFromMd,
+        report_md: reportMd,
+        report_text: markdownToPlain(reportMd),
+      };
+    }
+
+    const fallbackSections = [];
+    const map = result.report_sections || {};
+    ["0", "1", "2", "3", "4", "5", "6"].forEach((key) => {
+      const value = cleanAiText(map[key] || "");
+      if (value) {
+        const title = value.match(/^##\s+(.+)$/m)?.[1] || reportSectionTitles[Number(key)] || `Раздел ${key}`;
+        fallbackSections.push({
+          id: `section-${slugifySection(title)}`,
+          title,
+          md: value.replace(/^##\s+.+$/m, "").trim(),
+        });
+      }
+    });
+
+    if (fallbackSections.length > 0) {
+      const fallbackMd = fallbackSections
+        .map((section) => `## ${section.title}\n\n${section.md}`)
+        .join("\n\n");
+      return {
+        sections: fallbackSections,
+        report_md: fallbackMd,
+        report_text: markdownToPlain(fallbackMd),
+      };
+    }
+
+    return { sections: [], report_md: "", report_text: "" };
+  };
+
+  const renderReport = (bundle) => {
+    if (!reportDocument || !reportToc) return;
+
+    const html = bundle.sections
+      .map((section) => {
+        const body = markdownBodyToHtml(section.md);
+        return `<section id=\"${section.id}\" class=\"report-section\"><h2>${escapeHtml(section.title)}</h2>${body}</section>`;
+      })
+      .join("\n");
+
+    reportDocument.innerHTML = html;
+
+    const tocHtml = bundle.sections
+      .map((section) => `<a href=\"#${section.id}\" class=\"toc-link\" data-target=\"${section.id}\">${escapeHtml(section.title)}</a>`)
+      .join("\n");
+    reportToc.innerHTML = tocHtml;
+
+    if (tocObserver) tocObserver.disconnect();
+    const tocLinks = Array.from(reportToc.querySelectorAll(".toc-link"));
+    const sections = Array.from(reportDocument.querySelectorAll(".report-section"));
+
+    const setActiveToc = (id) => {
+      tocLinks.forEach((link) => link.classList.toggle("active", link.dataset.target === id));
+    };
+
+    tocLinks.forEach((link) => {
+      link.addEventListener("click", () => {
+        const id = link.dataset.target || "";
+        if (id) {
+          setActiveToc(id);
+        }
+      });
+    });
+
+    if (sections.length > 0) {
+      setActiveToc(sections[0].id);
+      tocObserver = new IntersectionObserver(
+        (entries) => {
+          const visible = entries
+            .filter((entry) => entry.isIntersecting)
+            .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+          if (visible.length > 0) {
+            setActiveToc(visible[0].target.id);
+          }
+        },
+        { rootMargin: "-18% 0px -62% 0px", threshold: [0.15, 0.3, 0.5] },
+      );
+      sections.forEach((section) => tocObserver.observe(section));
+    }
+
+    reportDocument.querySelectorAll(".url-copy-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const full = btn.getAttribute("data-full-url") || "";
+        try {
+          await navigator.clipboard.writeText(full);
+          const prev = btn.textContent;
+          btn.textContent = "ok";
+          setTimeout(() => {
+            btn.textContent = prev || "коп.";
+          }, 900);
+        } catch (error) {
+          btn.textContent = "err";
+          setTimeout(() => {
+            btn.textContent = "коп.";
+          }, 900);
+        }
+      });
+    });
   };
 
   const renderResult = (result) => {
@@ -300,69 +606,76 @@
     runIdTitle.textContent = `Отчёт для сайта ${domain}`;
 
     const pagesCount = Array.isArray(result.top_pages) ? result.top_pages.length : 0;
-    const sourceLabel = result.audit_mode === "screenshot" ? "Источник: Ссылка" : "Источник: Метрика";
+    let sourceLabel = "Источник: Метрика";
+    if (result.audit_mode === "screenshot") {
+      sourceLabel = "Источник: Ссылка";
+    } else if (result.audit_mode === "metrika") {
+      const counterName = result.metrika_counter_name ? ` (${result.metrika_counter_name})` : "";
+      const days = Number(result.metrika_effective_period_days || 0);
+      const accuracy = String(result.metrika_effective_accuracy || "");
+      const tuning = days > 0 || accuracy ? ` • период: ${days || "-"} дн. • accuracy: ${accuracy || "-"}` : "";
+      sourceLabel = `Источник: Метрика API${counterName}${tuning}`;
+    } else if (result.audit_mode === "full") {
+      sourceLabel = "Источник: Метрика (Excel)";
+    }
+
     reportMeta.textContent = `Страниц: ${pagesCount} • ${sourceLabel}`;
     reportMeta.classList.remove("hidden");
 
-    finalSummary.textContent = result.final_summary || "";
-    summarySection.classList.toggle("hidden", !result.final_summary);
+    if (exportSheetsBtn) {
+      exportSheetsBtn.classList.toggle("hidden", result.audit_mode === "metrika");
+    }
 
-    metricsAnalysis.textContent = result.metrics_analysis || "";
-    metricsSection.classList.toggle("hidden", result.audit_mode === "screenshot");
+    reportBundle = buildStructuredReport(result);
+    renderReport(reportBundle);
 
-    audienceAnalysis.textContent = result.audience_analysis || "";
-    pagesAnalysis.textContent = result.pages_analysis || "";
-
-    pagesGrid.replaceChildren();
-    (result.top_pages || []).forEach((item) => pagesGrid.appendChild(createPageCard(item)));
-
-    if (result.errors && result.errors.length > 0) {
+    const errors = Array.isArray(result.errors) ? [...result.errors] : [];
+    const violationsText = String(result.violations || "").trim();
+    if (errors.length > 0 || violationsText) {
       errorsBox.classList.remove("hidden");
       errorsBox.replaceChildren();
-      result.errors.forEach((err) => {
+      errors.forEach((err) => {
         const p = document.createElement("p");
         p.textContent = err;
         errorsBox.appendChild(p);
       });
+      if (violationsText) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "technical-notes";
+
+        const title = document.createElement("strong");
+        title.textContent = "Технические заметки";
+        wrapper.appendChild(title);
+
+        const notes = document.createElement("p");
+        notes.className = "technical-notes-text truncated";
+        notes.textContent = violationsText;
+        wrapper.appendChild(notes);
+
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "link-subtle technical-notes-toggle";
+        toggle.textContent = "показать полностью";
+        toggle.addEventListener("click", () => {
+          const truncated = notes.classList.contains("truncated");
+          notes.classList.toggle("truncated", !truncated);
+          toggle.textContent = truncated ? "свернуть" : "показать полностью";
+        });
+        wrapper.appendChild(toggle);
+
+        errorsBox.appendChild(wrapper);
+      }
     } else {
       errorsBox.classList.add("hidden");
       errorsBox.replaceChildren();
     }
   };
 
-  const buildReportText = (result) => {
-    const lines = [];
-    lines.push(`Отчёт: ${result.run_id || "-"}`);
-    lines.push(`Режим: ${result.audit_mode || "-"}`);
-    lines.push("");
-    if (result.final_summary) {
-      lines.push("Саммари");
-      lines.push(result.final_summary);
-      lines.push("");
-    }
-    if (result.metrics_analysis) {
-      lines.push("Анализ метрики");
-      lines.push(result.metrics_analysis);
-      lines.push("");
-    }
-    if (result.audience_analysis) {
-      lines.push("Анализ ЦА / JTBD");
-      lines.push(result.audience_analysis);
-      lines.push("");
-    }
-    if (result.pages_analysis) {
-      lines.push("Анализ страниц и скриншотов");
-      lines.push(result.pages_analysis);
-      lines.push("");
-    }
-    return lines.join("\n");
-  };
-
   if (headerMoreToggle && headerMore) {
     headerMoreToggle.addEventListener("click", () => {
       const hidden = headerMore.classList.contains("hidden");
       headerMore.classList.toggle("hidden", !hidden);
-            headerMoreToggle.setAttribute("aria-expanded", String(hidden));
+      headerMoreToggle.setAttribute("aria-expanded", String(hidden));
     });
   }
 
@@ -389,6 +702,61 @@
     });
   });
 
+  promptResetButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.key || "";
+      const targetId = btn.dataset.target || "";
+      const target = document.getElementById(targetId);
+      if (!target || !Object.prototype.hasOwnProperty.call(promptDefaults, key)) return;
+      target.value = String(promptDefaults[key] || "");
+      const status = document.querySelector(`[data-status-for="${targetId}"]`);
+      if (status) {
+        status.textContent = "Сброшено к шаблону";
+        status.className = "prompt-validate-status ok";
+      }
+    });
+  });
+
+  promptValidateButtons.forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const key = btn.dataset.key || "";
+      const targetId = btn.dataset.target || "";
+      const target = document.getElementById(targetId);
+      const status = document.querySelector(`[data-status-for="${targetId}"]`);
+      if (!target || !status) return;
+
+      status.textContent = "Проверяю…";
+      status.className = "prompt-validate-status";
+      btn.disabled = true;
+      try {
+        const response = await fetch("/prompt/validate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            key,
+            prompt: target.value || "",
+            audit_mode: auditMode ? auditMode.value : "screenshot",
+            top_n: Number(topNValue?.value || 1),
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Ошибка проверки");
+        if (payload.status === "warn") {
+          status.textContent = `Ок, но есть риски: ${(payload.warnings || []).join("; ")}`;
+          status.className = "prompt-validate-status warn";
+        } else {
+          status.textContent = "Промт прошёл проверку";
+          status.className = "prompt-validate-status ok";
+        }
+      } catch (error) {
+        status.textContent = `Ошибка проверки: ${String(error)}`;
+        status.className = "prompt-validate-status err";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+
   if (topNMode && customTopN && topNValue) {
     topNMode.addEventListener("change", syncTopNMode);
     customTopN.addEventListener("input", () => applyTopN(customTopN.value));
@@ -402,9 +770,9 @@
 
   if (copyReportBtn) {
     copyReportBtn.addEventListener("click", async () => {
-      if (!lastResult) return;
+      if (!reportBundle.report_text) return;
       try {
-        await navigator.clipboard.writeText(buildReportText(lastResult));
+        await navigator.clipboard.writeText(reportBundle.report_text);
         copyReportBtn.textContent = "Скопировано";
         setTimeout(() => {
           copyReportBtn.textContent = "Копировать";
@@ -427,7 +795,7 @@
         const response = await fetch("/report/pdf", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(lastResult),
+          body: JSON.stringify({ ...lastResult, report_md: reportBundle.report_md, report_text: reportBundle.report_text }),
         });
         if (!response.ok) throw new Error("Не удалось сформировать PDF");
 
@@ -489,6 +857,9 @@
     event.preventDefault();
 
     const formData = new FormData(form);
+    form.querySelectorAll('input[type="checkbox"][name^="enabled_"]').forEach((checkbox) => {
+      formData.set(checkbox.name, checkbox.checked ? "1" : "0");
+    });
     submitBtn.disabled = true;
     startProgress();
 
