@@ -1,5 +1,7 @@
 (() => {
   const form = document.getElementById("top10-form");
+  if (!form) return;
+
   const structureMode = document.getElementById("structure-mode");
   const top10SourceBlock = document.getElementById("top10-source-block");
   const queriesField = document.getElementById("top10-queries");
@@ -25,26 +27,34 @@
   const errorsBox = document.getElementById("top10-errors");
 
   const urlsUsedDoc = document.getElementById("top10-urls-used-doc");
-  const analysisDoc = document.getElementById("top10-analysis-structure-doc");
+  const summaryDoc = document.getElementById("top10-summary-doc");
+  const blocksDoc = document.getElementById("top10-analysis-structure-doc");
   const structureDoc = document.getElementById("top10-structure-proposal-doc");
   const urlsToc = document.getElementById("top10-urls-toc");
-  const analysisToc = document.getElementById("top10-analysis-toc");
+  const summaryToc = document.getElementById("top10-summary-toc");
+  const blocksToc = document.getElementById("top10-analysis-toc");
   const structureToc = document.getElementById("top10-structure-toc");
 
   const pagesGrid = document.getElementById("top10-pages-grid");
   const exportSheetsBtn = document.getElementById("top10-export-sheets-btn");
 
-  const headerMoreToggle = document.getElementById("header-more-toggle");
-  const headerMore = document.getElementById("header-more");
-  const promptToggles = document.querySelectorAll(".top10-prompt-toggle");
-  const promptAreas = [
-    document.getElementById("top10-prompt-1"),
-    document.getElementById("top10-prompt-2"),
-    document.getElementById("top10-table-blocks-prompt"),
-    document.getElementById("top10-table-structure-prompt"),
-  ].filter(Boolean);
+  const promptDefaultsNode = document.getElementById("top10-prompts-defaults");
+  const promptDefaults = (() => {
+    if (!promptDefaultsNode) return {};
+    try {
+      return JSON.parse(promptDefaultsNode.textContent || "{}");
+    } catch (_error) {
+      return {};
+    }
+  })();
+
+  const promptFields = Array.from(document.querySelectorAll(".prompt-field"));
+  const promptToggles = document.querySelectorAll(".prompt-toggle");
+  const promptResetButtons = document.querySelectorAll(".prompt-reset");
+  const promptValidateButtons = document.querySelectorAll(".prompt-validate");
+
   const tabButtons = document.querySelectorAll(".top10-tab-btn");
-  const tabPanels = document.querySelectorAll("#top10-panel-analysis, #top10-panel-structure");
+  const tabPanels = document.querySelectorAll("#top10-panel-summary, #top10-panel-blocks, #top10-panel-structure");
 
   let progressTimer = null;
   let progress = 0;
@@ -69,8 +79,8 @@
     const isTop10Mode = !structureMode || structureMode.value === "top10";
     let status = isTop10Mode ? "Этап 1/4: получение top-10" : "Этап 1/4: подготовка списка сайтов";
     if (progress >= 28) status = "Этап 2/4: скриншоты и текст";
-    if (progress >= 62) status = "Этап 3/4: анализ структуры";
-    if (progress >= 85) status = "Этап 4/4: предложение по структуре";
+    if (progress >= 62) status = "Этап 3/4: блоки и выводы";
+    if (progress >= 85) status = "Этап 4/4: предложение структуры";
 
     progressBar.style.width = `${progress}%`;
     progressPercent.textContent = `${Math.round(progress)}%`;
@@ -127,19 +137,63 @@
     }, 700);
   };
 
-  const renderErrors = (errors) => {
-    if (errors && errors.length > 0) {
+  const renderErrors = (errors, options = {}) => {
+    const list = Array.isArray(errors) ? errors.filter(Boolean) : [];
+    const type = options.type || "error";
+    const shortText = options.short || list[0] || "";
+    if (list.length > 0) {
       errorsBox.classList.remove("hidden");
+      errorsBox.classList.toggle("info", type === "info");
       errorsBox.replaceChildren();
-      errors.forEach((err) => {
-        const p = document.createElement("p");
-        p.textContent = err;
-        errorsBox.appendChild(p);
-      });
+      const main = document.createElement("p");
+      main.textContent = shortText;
+      errorsBox.appendChild(main);
+      const details = list.length > 1 || (list[0] && list[0] !== shortText);
+      if (details) {
+        const wrap = document.createElement("details");
+        wrap.className = "technical-notes";
+        const summary = document.createElement("summary");
+        summary.textContent = "Показать детали";
+        wrap.appendChild(summary);
+        list.forEach((err) => {
+          const p = document.createElement("p");
+          p.className = "technical-notes-text";
+          p.textContent = err;
+          wrap.appendChild(p);
+        });
+        errorsBox.appendChild(wrap);
+      }
     } else {
       errorsBox.classList.add("hidden");
+      errorsBox.classList.remove("info");
       errorsBox.replaceChildren();
     }
+  };
+
+  const renderStatusNotice = (payload) => {
+    const errors = payload.errors || [];
+    const reason = payload.export_matrix_reason || "";
+    const source = payload.structures_rows_source || "";
+    const recovered = ["service_data_json_block", "fenced_json_block", "raw_json_array_scan"].includes(source);
+
+    if (!payload.export_matrix_ready) {
+      const message = reason || "Матрица не сформирована, выгружен текстовый fallback.";
+      renderErrors([message, ...errors], { type: "error", short: message });
+      return;
+    }
+
+    if (errors.length > 0) {
+      renderErrors(errors, { type: "error" });
+      return;
+    }
+
+    if (recovered) {
+      const infoText = reason || "Структура восстановлена автоматически из JSON-блока.";
+      renderErrors([infoText], { type: "info", short: "Структура восстановлена автоматически из JSON-блока." });
+      return;
+    }
+
+    renderErrors([]);
   };
 
   const escapeHtml = (value) =>
@@ -154,8 +208,16 @@
     let html = escapeHtml(text);
     html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a class="doc-link" href="$2" target="_blank" rel="noreferrer" title="$2">$1</a>');
+    const linkTokens = [];
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label, href) => {
+      const token = `@@MDLINK_${linkTokens.length}@@`;
+      linkTokens.push({ token, html: `<a class=\"doc-link\" href=\"${href}\" target=\"_blank\" rel=\"noreferrer\" title=\"${href}\">${label}</a>` });
+      return token;
+    });
     html = html.replace(/(https?:\/\/[^\s<]+)/g, '<a class="doc-link" href="$1" target="_blank" rel="noreferrer" title="$1">$1</a>');
+    linkTokens.forEach((item) => {
+      html = html.replace(item.token, item.html);
+    });
     return html;
   };
 
@@ -220,6 +282,16 @@
 
     closeLists();
     return out.join("\n");
+  };
+
+  const prettifyTaxonomyText = (text) => {
+    let value = String(text || "");
+    value = value.replace(/L1\s*→\s*L2\s*→\s*L3/gi, "категория блока / тип блока / подтип блока");
+    value = value.replace(/\bL1\/L2\/L3\b/gi, "категория блока / тип блока / подтип блока");
+    value = value.replace(/^\s*L1\s*:/gim, "категория блока:");
+    value = value.replace(/^\s*L2\s*:/gim, "тип блока:");
+    value = value.replace(/^\s*L3\s*:/gim, "подтип блока:");
+    return value;
   };
 
   const splitSections = (text, fallbackTitle) => {
@@ -390,21 +462,31 @@
     emptyState.classList.add("hidden");
     resultView.classList.remove("hidden");
     runTitle.textContent = `Отчёт: структура по конкурентам ${payload.run_id || ""}`.trim();
-    renderErrors(payload.errors || []);
+    renderStatusNotice(payload);
 
     const urls = payload.urls || [];
     const urlsText = urls.length > 0
       ? urls.map((item, index) => `${index + 1}. [${item.url}](${item.url})${item.count ? ` — встречаемость: ${item.count}` : ""}`).join("\n")
       : "URL не получены.";
 
-    renderDoc(urlsText, urlsToc, urlsUsedDoc, "Использованные URL", "top10-urls");
-    renderDoc(payload.analysis_structure || "", analysisToc, analysisDoc, "Анализ", "top10-analysis");
-    renderDoc(payload.structure_proposal || "", structureToc, structureDoc, "Предложение по структуре", "top10-structure");
+    renderDoc(prettifyTaxonomyText(urlsText), urlsToc, urlsUsedDoc, "Использованные URL", "top10-urls");
+    renderDoc(prettifyTaxonomyText(payload.summary_report || ""), summaryToc, summaryDoc, "Общие выводы", "top10-summary");
+    renderDoc(prettifyTaxonomyText(payload.normalized_blocks || ""), blocksToc, blocksDoc, "Нормализованные блоки", "top10-blocks");
+    renderDoc(prettifyTaxonomyText(payload.structure_proposal || ""), structureToc, structureDoc, "Предложение по структуре", "top10-structure");
 
-    selectTab("top10-panel-analysis");
+    selectTab("top10-panel-summary");
 
     pagesGrid.replaceChildren();
     (payload.pages || []).forEach((page) => pagesGrid.appendChild(createPageCard(page)));
+
+    if (exportSheetsBtn) {
+      exportSheetsBtn.disabled = !payload.export_matrix_ready;
+      if (!payload.export_matrix_ready) {
+        exportSheetsBtn.title = payload.export_matrix_reason || "Матрица не сформирована, экспорт будет fallback.";
+      } else {
+        exportSheetsBtn.title = "";
+      }
+    }
   };
 
   const syncStructureMode = () => {
@@ -422,7 +504,7 @@
   };
 
   const collectQueriesAndRegion = () => {
-    const queries = (queriesField.value || "").trim();
+    const queries = (queriesField.value || "").replace(/\\n/g, "\n").trim();
     const parsed = parseRegionId(regionSearchField.value);
     if (parsed) {
       applyRegionSelection(parsed, regionSearchField.value.replace(/\s*\(\d+\)\s*$/, ""));
@@ -474,13 +556,85 @@
     }
   };
 
-  if (headerMoreToggle && headerMore) {
-    headerMoreToggle.addEventListener("click", () => {
-      const hidden = headerMore.classList.contains("hidden");
-      headerMore.classList.toggle("hidden", !hidden);
-      headerMoreToggle.setAttribute("aria-expanded", String(hidden));
+  const togglePromptEditor = (targetId, button) => {
+    const target = document.getElementById(targetId);
+    if (!target) return;
+    const actions = document.querySelector(`[data-actions-for="${targetId}"]`);
+    const isHidden = target.classList.contains("hidden");
+
+    promptFields.forEach((field) => {
+      if (!field || field.id === targetId) return;
+      field.classList.add("hidden");
+      const fieldActions = document.querySelector(`[data-actions-for="${field.id}"]`);
+      if (fieldActions) fieldActions.classList.add("hidden");
     });
-  }
+
+    promptToggles.forEach((btn) => {
+      if (btn === button) return;
+      btn.textContent = "Редактировать";
+    });
+
+    target.classList.toggle("hidden", !isHidden);
+    if (actions) actions.classList.toggle("hidden", !isHidden);
+    button.textContent = isHidden ? "Свернуть" : "Редактировать";
+  };
+
+  promptToggles.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      togglePromptEditor(btn.dataset.target || "", btn);
+    });
+  });
+
+  promptResetButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.key || "";
+      const targetId = btn.dataset.target || "";
+      const field = document.getElementById(targetId);
+      const status = document.querySelector(`[data-status-for="${targetId}"]`);
+      if (!field || !(field instanceof HTMLTextAreaElement)) return;
+      if (Object.prototype.hasOwnProperty.call(promptDefaults, key)) {
+        field.value = String(promptDefaults[key] || "");
+        if (status) {
+          status.textContent = "Сброшено к шаблону";
+          status.className = "prompt-validate-status ok";
+        }
+      }
+    });
+  });
+
+  promptValidateButtons.forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const key = btn.dataset.key || "";
+      const targetId = btn.dataset.target || "";
+      const field = document.getElementById(targetId);
+      const status = document.querySelector(`[data-status-for="${targetId}"]`);
+      if (!field || !(field instanceof HTMLTextAreaElement) || !status) return;
+
+      status.textContent = "Проверка…";
+      status.className = "prompt-validate-status";
+      try {
+        const response = await fetch("/prompt/validate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key, prompt: field.value }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Ошибка проверки");
+
+        const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+        if (warnings.length > 0) {
+          status.textContent = `Проверено: ${warnings.join("; ")}`;
+          status.className = "prompt-validate-status warn";
+        } else {
+          status.textContent = "Проверено: ок";
+          status.className = "prompt-validate-status ok";
+        }
+      } catch (error) {
+        status.textContent = `Ошибка: ${String(error)}`;
+        status.className = "prompt-validate-status err";
+      }
+    });
+  });
 
   if (regionSearchField) {
     fetchRegionSuggestions(regionSearchField.value || "");
@@ -504,22 +658,6 @@
     });
   });
 
-  promptToggles.forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const target = document.getElementById(btn.dataset.target || "");
-      if (!target) return;
-      const hidden = target.classList.contains("hidden");
-      promptAreas.forEach((area) => {
-        if (area.id !== target.id) area.classList.add("hidden");
-      });
-      promptToggles.forEach((b) => {
-        if (b !== btn) b.textContent = "Редактировать";
-      });
-      target.classList.toggle("hidden", !hidden);
-      btn.textContent = hidden ? "Свернуть" : "Редактировать";
-    });
-  });
-
   if (showBtn) showBtn.addEventListener("click", showTop10);
 
   if (structureMode) {
@@ -529,6 +667,18 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const isTop10Mode = !structureMode || structureMode.value === "top10";
+    const normalizedQueries = (queriesField?.value || "").replace(/\\n/g, "\n").trim();
+    const normalizedUrls = (urlsField?.value || "").trim();
+    if (isTop10Mode && !normalizedQueries && !normalizedUrls) {
+      renderErrors(["Добавьте поисковые запросы или заполните список URL вручную."]);
+      return;
+    }
+    if (!isTop10Mode && !normalizedUrls) {
+      renderErrors(["Добавьте хотя бы один URL для анализа."]);
+      return;
+    }
+
     startProgress();
     showBtn.disabled = true;
     buildBtn.disabled = true;
@@ -536,13 +686,21 @@
 
     try {
       const formData = new FormData(form);
+      if (queriesField) {
+        formData.set("search_queries", normalizedQueries);
+      }
+      form.querySelectorAll('input[type="checkbox"][name^="enabled_"]').forEach((checkbox) => {
+        const input = checkbox;
+        formData.set(input.name, input.checked ? "1" : "0");
+      });
+
       const response = await fetch("/analyze-top10-structure", {
         method: "POST",
         body: formData,
       });
       const payload = await response.json();
       renderResult(payload);
-      if (!response.ok || (payload.errors && payload.errors.length > 0 && !payload.analysis_structure && !payload.structure_proposal)) {
+      if (!response.ok || (payload.errors && payload.errors.length > 0 && !payload.summary_report && !payload.normalized_blocks && !payload.structure_proposal)) {
         failProgress();
       } else {
         completeProgress();
@@ -552,7 +710,8 @@
         run_id: "",
         urls: [],
         pages: [],
-        analysis_structure: "",
+        summary_report: "",
+        normalized_blocks: "",
         structure_proposal: "",
         errors: [String(error)],
       });
@@ -565,7 +724,7 @@
 
   if (exportSheetsBtn) {
     exportSheetsBtn.addEventListener("click", async () => {
-      if (!lastResult) return;
+      if (!lastResult || !lastResult.export_matrix_ready) return;
       exportSheetsBtn.disabled = true;
       exportSheetsBtn.textContent = "Отправляем…";
       try {
@@ -587,8 +746,20 @@
         urls.forEach((url) => {
           if (url) window.open(url, "_blank", "noopener,noreferrer");
         });
+        renderErrors([]);
         exportSheetsBtn.textContent = "Готово";
-      } catch (_error) {
+      } catch (error) {
+        const message = String(error || "");
+        if (
+          message.includes("top10.v3")
+          || message.includes("compare_sheet")
+          || message.includes("sites_sheet")
+          || message.includes("structure_sheet")
+        ) {
+          renderErrors(["Экспорт невозможен: обновите Apps Script для формата top10.v3 (compare/sites/structure)."]);
+        } else {
+          renderErrors([message || "Ошибка экспорта в Google Sheets."]);
+        }
         exportSheetsBtn.textContent = "Ошибка";
       } finally {
         setTimeout(() => {

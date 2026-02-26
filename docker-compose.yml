@@ -6,6 +6,8 @@ services:
     container_name: ai-analitik
     env_file:
       - .env
+    ports:
+      - "8011:8000"
     volumes:
       - ./data:/app/data
     restart: unless-stopped

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AiНАЛИТИК — Пользовательская документация</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
+</head>
+<body>
+  <main class="page">
+    <section class="card app-topbar">
+      <a class="logo-link" href="/">
+        <img src="/static/logo.png" alt="" class="brand-logo" onerror="this.style.display='none'">
+        <span>AiНАЛИТИК</span>
+      </a>
+      <nav class="tool-nav" aria-label="Инструменты">
+        <div class="tool-item"><a class="tool-link" href="/">Аудит сайта</a></div>
+        <div class="tool-item"><a class="tool-link" href="/competitors">Анализ конкурентов</a></div>
+        <div class="tool-item"><a class="tool-link" href="/top10-structure">Структура по конкурентам</a></div>
+        <details class="tool-item tool-dropdown" open>
+          <summary class="tool-link active">Документация (ver. 0,1)</summary>
+          <nav class="tool-dropdown-menu" aria-label="Документация">
+            <a class="tool-dropdown-link active" href="/docs/user">Пользовательская</a>
+            <a class="tool-dropdown-link" href="/docs/tech">Техническая</a>
+          </nav>
+        </details>
+      </nav>
+      <a class="vibecoder-link" href="https://t.me/kotovskiysupport_bot" target="_blank" rel="noreferrer">Поддержка</a>
+    </section>
+
+    <section class="docs-grid">
+      <article class="card docs-card">
+        <h1>Пользовательская документация</h1>
+        <p><strong>Версия:</strong> 0,1</p>
+        <p>Сервис анализирует сайт и конкурентов на основе данных Яндекс.Метрики, скриншотов и текста страниц.</p>
+      </article>
+
+      <article class="card docs-card">
+        <h2>1. Инструмент «Аудит сайта»</h2>
+        <p>Доступны режимы:</p>
+        <ul>
+          <li><strong>Аудит по ссылке</strong> — анализ одной страницы по скриншотам и тексту.</li>
+          <li><strong>Аудит по выгрузке</strong> — загрузка Excel-выгрузок Метрики + аудит топовых страниц.</li>
+          <li><strong>Аудит по Метрике</strong> — данные из API Метрики + аудит страниц.</li>
+        </ul>
+        <p>Результат: структурированный отчёт с саммари, проблемами UX, картой соответствия интентов и планом работ.</p>
+      </article>
+
+      <article class="card docs-card">
+        <h2>2. Инструмент «Анализ конкурентов»</h2>
+        <p>На вход подаётся список URL конкурентов. Сервис собирает:</p>
+        <ul>
+          <li>скриншоты desktop/mobile;</li>
+          <li>текст страниц;</li>
+          <li>аналитику по структуре и смыслам.</li>
+        </ul>
+        <p>Результат во вкладках:</p>
+        <ul>
+          <li>Общие выводы;</li>
+          <li>Нормализованные блоки;</li>
+          <li>Анализ смыслов.</li>
+        </ul>
+        <p>Экспорт в таблицы доступен как встроенная функция инструмента после завершения анализа.</p>
+        <p>В таблице для этого инструмента формируются листы сравнительного анализа и структуры сайтов.</p>
+      </article>
+
+      <article class="card docs-card">
+        <h2>3. Инструмент «Структура по конкурентам»</h2>
+        <p>Режимы запуска:</p>
+        <ul>
+          <li><strong>Структура по топ-10</strong> — сбор URL из выдачи по запросам/региону.</li>
+          <li><strong>Структура по списку сайтов</strong> — ручной список URL без сбора топ-10.</li>
+        </ul>
+        <p>Результат:</p>
+        <ul>
+          <li>общие выводы;</li>
+          <li>нормализованные блоки;</li>
+          <li>предложение по оптимальной структуре страницы.</li>
+        </ul>
+        <p>Экспорт в таблицы встроен в инструмент и формирует 3 листа:</p>
+        <ul>
+          <li><code>compare</code> — матрица блоков по сайтам;</li>
+          <li><code>sites</code> — структура каждого сайта по колонкам;</li>
+          <li><code>structure</code> — предложенная структура (блок + комментарий).</li>
+        </ul>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

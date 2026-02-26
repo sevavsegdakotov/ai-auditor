@@ -104,6 +104,10 @@ class AppsScriptSheetsExporter:
             "spreadsheet_id": spreadsheet_id,
             "spreadsheet_url": spreadsheet_url,
         }
+        for key in ("compare_sheet", "sites_sheet", "analysis_sheet", "structure_sheet"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                result[key] = value.strip()
         if spreadsheet_urls:
             result["spreadsheet_urls"] = spreadsheet_urls
         return result  # type: ignore[return-value]

@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from html import escape
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -20,6 +22,8 @@ from app.keyso import KeysoClient
 from app.llm import LLMClient
 from app.metrika_api import MetrikaApiError, MetrikaClient
 from app.metrics import TopPage, dataframe_preview, parse_metrics_files
+from app.competitor_prompts import DEFAULT_COMPETITOR_PROMPTS, DEFAULT_COMPETITOR_PROMPT_ENABLED
+from app.top10_prompts import DEFAULT_TOP10_PROMPTS, DEFAULT_TOP10_PROMPT_ENABLED
 from app.site_audit_prompts import DEFAULT_SITE_PROMPTS, DEFAULT_SITE_PROMPT_ENABLED
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -34,6 +38,7 @@ app = FastAPI(title="ai-аналитик")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+logger = logging.getLogger(__name__)
 
 FINAL_SUMMARY_PROMPT = """<PROMPT_FINAL_SUMMARY_v1>
 
@@ -496,10 +501,8 @@ async def competitors(request: Request) -> HTMLResponse:
         "competitors.html",
         {
             "asset_version": datetime.now().strftime("%Y%m%d%H%M%S"),
-            "default_competitor_prompt_1": COMPETITOR_PROMPT_1,
-            "default_competitor_prompt_2": COMPETITOR_PROMPT_2,
-            "default_competitor_prompt_3": COMPETITOR_PROMPT_3,
-            "default_competitor_table_blocks_prompt": COMPETITOR_TABLE_BLOCKS_PROMPT,
+            "default_competitor_prompts": DEFAULT_COMPETITOR_PROMPTS,
+            "default_competitor_prompt_enabled": DEFAULT_COMPETITOR_PROMPT_ENABLED,
         },
     )
 
@@ -511,12 +514,32 @@ async def top10_structure(request: Request) -> HTMLResponse:
         "top10_structure.html",
         {
             "asset_version": datetime.now().strftime("%Y%m%d%H%M%S"),
-            "default_top10_prompt_1": TOP10_PROMPT_1,
-            "default_top10_prompt_2": TOP10_PROMPT_2,
-            "default_top10_table_blocks_prompt": TOP10_TABLE_BLOCKS_PROMPT,
-            "default_top10_table_structure_prompt": TOP10_TABLE_STRUCTURE_PROMPT,
+            "default_top10_prompts": DEFAULT_TOP10_PROMPTS,
+            "default_top10_prompt_enabled": DEFAULT_TOP10_PROMPT_ENABLED,
             "default_region_id": "225",
             "default_region_name": "Россия",
+        },
+    )
+
+
+@app.get("/docs/user", response_class=HTMLResponse)
+async def docs_user(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "docs_user.html",
+        {
+            "asset_version": datetime.now().strftime("%Y%m%d%H%M%S"),
+        },
+    )
+
+
+@app.get("/docs/tech", response_class=HTMLResponse)
+async def docs_tech(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "docs_tech.html",
+        {
+            "asset_version": datetime.now().strftime("%Y%m%d%H%M%S"),
         },
     )
 
@@ -1010,6 +1033,24 @@ def _parse_queries(raw: str) -> list[str]:
     return [item.strip() for item in raw.splitlines() if item.strip()]
 
 
+def _canonical_site(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    candidate = raw
+    if candidate.startswith(("http://", "https://")) or "/" in candidate:
+        try:
+            parsed = urlparse(candidate)
+            if parsed.netloc:
+                candidate = parsed.netloc
+        except Exception:  # noqa: BLE001
+            pass
+    candidate = candidate.lower().strip().strip("/")
+    if candidate.startswith("www."):
+        candidate = candidate[4:]
+    return candidate
+
+
 def _top10_cache_file() -> Path:
     return DATA_DIR / "top10_cache.json"
 
@@ -1102,6 +1143,547 @@ def _normalize_competitor_prompt(raw: str) -> str:
     return text
 
 
+def _extract_json_array_block(text: str, marker: str) -> list[dict]:
+    if not text:
+        return []
+    marker_pos = text.find(marker)
+    if marker_pos < 0:
+        return []
+    start = text.find("[", marker_pos)
+    if start < 0:
+        return []
+    depth = 0
+    in_string = False
+    escaped = False
+    end = -1
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                end = idx + 1
+                break
+    if end < 0:
+        return []
+    raw = text[start:end]
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+    except Exception:  # noqa: BLE001
+        return []
+    return []
+
+
+def _extract_first_json_array_after(text: str, start_pos: int) -> list[dict]:
+    if not text or start_pos < 0:
+        return []
+    start = text.find("[", start_pos)
+    if start < 0:
+        return []
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                raw = text[start : idx + 1]
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return [item for item in parsed if isinstance(item, dict)]
+                except Exception:  # noqa: BLE001
+                    return []
+                return []
+    return []
+
+
+def _find_fenced_json_arrays(text: str) -> list[list[dict]]:
+    if not text:
+        return []
+    matches = re.findall(r"```json\s*(\[[\s\S]*?\])\s*```", text, flags=re.IGNORECASE)
+    arrays: list[list[dict]] = []
+    for raw in matches:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                rows = [item for item in parsed if isinstance(item, dict)]
+                if rows:
+                    arrays.append(rows)
+        except Exception:  # noqa: BLE001
+            continue
+    return arrays
+
+
+def _looks_like_structures_rows(rows: list[dict]) -> bool:
+    if not rows:
+        return False
+    required_hits = 0
+    probe = rows[: min(8, len(rows))]
+    for row in probe:
+        if not isinstance(row, dict):
+            continue
+        has_site_or_url = bool(row.get("site") or row.get("page_url"))
+        has_block = bool(row.get("l2_id") or row.get("block_name") or row.get("block_id"))
+        has_index = row.get("block_index") is not None
+        if has_site_or_url and has_block and has_index:
+            required_hits += 1
+    return required_hits >= max(1, len(probe) // 2)
+
+
+def _extract_marked_sheet_text(raw: str, marker: str) -> str:
+    text = (raw or "").replace("\r", "")
+    lines = text.split("\n")
+    header = marker.strip().upper()
+    current: list[str] = []
+    active = False
+    for line in lines:
+        normalized = line.strip().upper()
+        if normalized == header:
+            active = True
+            current = []
+            continue
+        if normalized.startswith("### SHEET_") and active:
+            break
+        if active:
+            current.append(line)
+    return "\n".join(current).strip()
+
+
+def _build_blocks_comparison_from_rows(rows: list[dict]) -> str:
+    if not rows:
+        return ""
+    page_keys: dict[tuple[str, str], str] = {}
+    block_sites: dict[str, set[str]] = {}
+    block_display: dict[str, str] = {}
+    for row in rows:
+        site = str(row.get("site") or "").strip()
+        page_url = str(row.get("page_url") or "").strip()
+        l2_id = str(row.get("l2_id") or "").strip()
+        l2_label_ru = str(row.get("l2_label_ru") or "").strip()
+        block_name = str(row.get("block_name") or "").strip()
+        key_name = l2_id or block_name
+        if not site or not page_url or not key_name:
+            continue
+        key = (site, page_url)
+        page_keys[key] = site
+        block_sites.setdefault(key_name, set()).add(site)
+        if key_name not in block_display:
+            block_display[key_name] = f"{l2_label_ru} ({l2_id})" if l2_label_ru and l2_id else (l2_label_ru or key_name)
+
+    total_pages = len(page_keys)
+    if total_pages == 0:
+        return ""
+
+    items = sorted(block_sites.items(), key=lambda item: (-len(item[1]), item[0].lower()))
+    lines: list[str] = []
+    for idx, (block, sites) in enumerate(items, start=1):
+        site_list = ", ".join(sorted(sites))
+        label = block_display.get(block, block)
+        lines.append(f"{idx}. {label} — сайты: {site_list} — встречаемость: {len(sites)}/{total_pages}")
+    return "\n".join(lines)
+
+
+def _extract_competitor_structures_rows(normalized_blocks_text: str) -> tuple[list[dict], str]:
+    rows: list[dict] = []
+    source = "no_structures_rows_found"
+
+    rows = _extract_json_array_block(normalized_blocks_text, "structures_rows")
+    if rows:
+        source = "marker_structures_rows"
+    if not rows:
+        rows = _extract_json_array_block(normalized_blocks_text, "Sheet1_structures")
+        if rows:
+            source = "marker_sheet1_structures"
+    if not rows:
+        marker_positions = [
+            normalized_blocks_text.find("ЧАСТЬ B"),
+            normalized_blocks_text.find("СЛУЖЕБНЫЕ ДАННЫЕ"),
+            normalized_blocks_text.find("SERVICE DATA"),
+        ]
+        marker_positions = [pos for pos in marker_positions if pos >= 0]
+        for pos in marker_positions:
+            candidate = _extract_first_json_array_after(normalized_blocks_text, pos)
+            if candidate and _looks_like_structures_rows(candidate):
+                rows = candidate
+                source = "service_data_json_block"
+                break
+    if not rows:
+        for candidate in _find_fenced_json_arrays(normalized_blocks_text):
+            if _looks_like_structures_rows(candidate):
+                rows = candidate
+                source = "fenced_json_block"
+                break
+    if not rows:
+        candidate = _extract_first_json_array_after(normalized_blocks_text, 0)
+        if candidate and _looks_like_structures_rows(candidate):
+            rows = candidate
+            source = "raw_json_array_scan"
+
+    prepared: list[dict] = []
+    for row in rows:
+        site = _canonical_site(row.get("site") or "")
+        page_url = str(row.get("page_url") or "").strip()
+        l1_id = str(row.get("l1_id") or row.get("l1") or "").strip()
+        l1_label_ru = str(row.get("l1_label_ru") or "").strip()
+        l2_id = str(row.get("l2_id") or row.get("block_id") or "").strip()
+        l2_label_ru = str(row.get("l2_label_ru") or "").strip()
+        l3_id = str(row.get("l3_id") or row.get("block_variant") or "").strip()
+        l3_label_ru = str(row.get("l3_label_ru") or "").strip()
+        block_name = str(
+            row.get("block_name")
+            or row.get("canonical_block_name")
+            or l2_label_ru
+            or l2_id
+            or ""
+        ).strip()
+        if not l2_id:
+            l2_id = block_name
+        if not l2_label_ru:
+            l2_label_ru = block_name
+        if not site and page_url:
+            site = _canonical_site(page_url)
+        if not site or not page_url or not (l2_id or block_name):
+            continue
+        prepared.append(
+            {
+                "site": site,
+                "page_url": page_url,
+                "l1_id": l1_id,
+                "l1_label_ru": l1_label_ru,
+                "l2_id": l2_id,
+                "l2_label_ru": l2_label_ru,
+                "l3_id": l3_id,
+                "l3_label_ru": l3_label_ru,
+                "block_name": block_name,
+                "block_index": int(row.get("block_index") or 0),
+                "notes": str(row.get("notes") or "").strip(),
+                "confidence": float(row.get("confidence") or 0),
+            }
+        )
+    if prepared and source == "no_structures_rows_found":
+        source = "raw_json_array_scan"
+    return prepared, source
+
+
+def _normalize_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").replace("\u00a0", " ")).strip()
+
+
+def _same_label_id(label: str, block_id: str) -> bool:
+    def _canon(value: str) -> str:
+        v = _normalize_ws(value).lower().replace("_", " ").replace("-", " ")
+        v = re.sub(r"\s+", " ", v).strip()
+        return v
+
+    left = _canon(label)
+    right = _canon(block_id)
+    return bool(left and right and left == right)
+
+
+def _format_block_display(label_ru: str, block_id: str, fallback: str) -> str:
+    label = _normalize_ws(label_ru)
+    identifier = _normalize_ws(block_id)
+    fb = _normalize_ws(fallback)
+
+    if settings.strict_block_display_format:
+        if label and identifier:
+            if _same_label_id(label, identifier):
+                return label
+            return f"{label} ({identifier})"
+        if label:
+            return label
+        if identifier:
+            return identifier
+        return fb
+
+    # Rollback mode: previous behavior.
+    if label and identifier:
+        return f"{label} ({identifier})"
+    return label or identifier or fb
+
+
+def _validate_sheet1_matrix_rows(rows: object) -> tuple[bool, str]:
+    if not isinstance(rows, list) or len(rows) < 2:
+        return False, "Лист сравнения: ожидается минимум 2 строки."
+    header = rows[0]
+    if not isinstance(header, list) or len(header) < 2:
+        return False, "Лист сравнения: некорректный header."
+    if str(header[0]).strip() != "Блоки / Сайты":
+        return False, "Лист сравнения: первая ячейка должна быть «Блоки / Сайты»."
+    width = len(header)
+    for i, row in enumerate(rows[1:], start=2):
+        if not isinstance(row, list) or len(row) != width:
+            return False, f"Лист сравнения: строка {i} имеет неверную ширину."
+        for val in row[1:]:
+            cell = str(val or "").strip()
+            if cell not in {"", "✓"}:
+                return False, f"Лист сравнения: недопустимое значение «{cell}» в строке {i}."
+    return True, ""
+
+
+def _validate_sheet2_site_columns_rows(rows: object) -> tuple[bool, str]:
+    if not isinstance(rows, list) or len(rows) < 2:
+        return False, "Лист структуры по сайтам: ожидается минимум 2 строки."
+    header = rows[0]
+    if not isinstance(header, list) or len(header) < 2:
+        return False, "Лист структуры по сайтам: в header должно быть минимум 2 сайта."
+    width = len(header)
+    if any(not str(site or "").strip() for site in header):
+        return False, "Лист структуры по сайтам: пустые названия сайтов в header."
+    for i, row in enumerate(rows[1:], start=2):
+        if not isinstance(row, list) or len(row) != width:
+            return False, f"Лист структуры по сайтам: строка {i} имеет неверную ширину."
+    return True, ""
+
+
+def _validate_sheet3_proposed_rows(rows: object) -> tuple[bool, str]:
+    if not isinstance(rows, list) or len(rows) < 2:
+        return False, "Лист предложенной структуры: ожидается минимум 2 строки."
+    header = rows[0]
+    if not isinstance(header, list) or len(header) < 2:
+        return False, "Лист предложенной структуры: некорректный header."
+    if str(header[0]).strip() != "Блок" or str(header[1]).strip() != "Комментарии по блоку":
+        return False, "Лист предложенной структуры: header должен быть «Блок | Комментарии по блоку»."
+    for i, row in enumerate(rows[1:], start=2):
+        if not isinstance(row, list) or len(row) < 2:
+            return False, f"Лист предложенной структуры: строка {i} имеет неверный формат."
+    return True, ""
+
+
+def _build_top10_proposed_structure_rows(
+    table_structure_output: str,
+    structure_proposal_fallback: str,
+) -> tuple[list[list[str]], bool, str]:
+    header = ["Блок", "Комментарии по блоку"]
+    source_text = str(table_structure_output or "").strip() or str(structure_proposal_fallback or "").strip()
+    fallback_rows = [header, ["Не удалось выделить структуру автоматически", "Недостаточно структурированных строк в ответе модели."]]
+    if not source_text:
+        return fallback_rows, False, "Пустой текст предложенной структуры."
+
+    parsed_rows: list[list[str]] = [header]
+    skip_prefixes = (
+        "вкладка ",
+        "краткий вывод",
+        "конструктор по",
+        "контроль распределения cta",
+        "контроль распределения",
+        "чек-лист рисков",
+        "маршрут",
+        "итоговая структура",
+    )
+    separators = (" — ", " – ", " - ", " → ", ": ")
+
+    for raw in source_text.replace("\r", "").split("\n"):
+        line = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", str(raw or "").strip())
+        if not line:
+            continue
+        if line.startswith("#") or line.startswith("```"):
+            continue
+        if line.lower().startswith(skip_prefixes):
+            continue
+
+        block = line
+        comment = ""
+        for sep in separators:
+            if sep in line:
+                left, right = line.split(sep, 1)
+                left = left.strip()
+                right = right.strip()
+                if left and right and len(left) <= 140:
+                    block, comment = left, right
+                    break
+        parsed_rows.append([block, comment])
+
+    if len(parsed_rows) <= 1:
+        compact = _normalize_ws(source_text)
+        if len(compact) > 500:
+            compact = f"{compact[:500]}..."
+        return [header, ["Не удалось выделить структуру автоматически", compact]], False, "Не удалось извлечь структурированные пары блок/комментарий."
+
+    return parsed_rows, True, ""
+
+
+def _build_competitors_compare_and_site_text(
+    rows: list[dict], pages: list[dict]
+) -> tuple[str, str, list[list[str]], list[list[str]]]:
+    """Build deterministic 2-sheet payloads.
+
+    Returns:
+    - sheet1_text: per-site sections (for matrix parser fallback).
+    - sheet2_text: per-site sections with comments.
+    - sheet1_matrix_rows: ready matrix rows (row=block, col=site, value=checkmark).
+    - sheet2_site_columns_rows: ready rows (header=sites, rows=site structures).
+    """
+    if not rows:
+        return "", "", [], []
+
+    site_order: list[str] = []
+    site_to_rows: dict[str, list[dict]] = {}
+    for page in pages:
+        url = str(page.get("url") or "").strip()
+        if not url:
+            continue
+        site = _canonical_site(url)
+        if site and site not in site_order:
+            site_order.append(site)
+    for row in rows:
+        site = _canonical_site(row.get("site") or "")
+        if not site:
+            site = _canonical_site(row.get("page_url") or "")
+        if not site:
+            continue
+        site_to_rows.setdefault(site, []).append(row)
+        if site not in site_order:
+            site_order.append(site)
+
+    block_sites: dict[str, set[str]] = {}
+    block_display_by_id: dict[str, str] = {}
+    site_blocks_ordered: dict[str, list[tuple[str, str, str]]] = {}
+    for row in rows:
+        l2_id = str(row.get("l2_id") or "").strip()
+        l2_label_ru = str(row.get("l2_label_ru") or "").strip()
+        block_name = str(row.get("block_name") or "").strip()
+        block = l2_id or block_name
+        site = _canonical_site(row.get("site") or "")
+        if not site:
+            site = _canonical_site(row.get("page_url") or "")
+        notes = str(row.get("notes") or "").strip()
+        if not block or not site:
+            continue
+        block_sites.setdefault(block, set()).add(site)
+        if block not in block_display_by_id:
+            block_display_by_id[block] = _format_block_display(l2_label_ru, l2_id, block)
+        site_blocks_ordered.setdefault(site, []).append((block, block_display_by_id[block], notes))
+
+    total_sites = len(site_order) if site_order else len({str(r.get("site") or "") for r in rows})
+    total_sites = max(total_sites, 1)
+    sorted_blocks = sorted(block_sites.items(), key=lambda item: (-len(item[1]), item[0].lower()))
+    sheet1_lines: list[str] = []
+    for site in site_order:
+        blocks = site_blocks_ordered.get(site, [])
+        if not blocks:
+            continue
+        seen_blocks: set[str] = set()
+        sheet1_lines.append(f"https://{site}/")
+        idx = 1
+        for block, _display, _notes in blocks:
+            if block in seen_blocks:
+                continue
+            seen_blocks.add(block)
+            sheet1_lines.append(f"{idx}. {block_display_by_id.get(block, block)}")
+            idx += 1
+        sheet1_lines.append("")
+
+    # Matrix rows for direct sheet rendering.
+    matrix_rows: list[list[str]] = [["Блоки / Сайты", *site_order]]
+    for idx, (block, sites) in enumerate(sorted_blocks, start=1):
+        block_display = block_display_by_id.get(block, block)
+        row = [block_display]
+        for site in site_order:
+            row.append("✓" if site in sites else "")
+        matrix_rows.append(row)
+        # optional compact comparative line for raw fallback
+        sites_sorted = sorted(sites, key=lambda s: site_order.index(s) if s in site_order else 10_000)
+        sites_str = ", ".join(sites_sorted)
+        sheet1_lines.append(f"{idx}. {block_display} — сайты: {sites_str} — встречаемость: {len(sites)}/{total_sites}")
+    sheet1_text = "\n".join(sheet1_lines).strip()
+
+    # Sheet 2: per-site normalized structure with comments.
+    sheet2_lines: list[str] = []
+    site_columns_rows: list[list[str]] = [site_order]
+    site_columns_values: dict[str, list[str]] = {}
+    for site in site_order:
+        rows_for_site = site_to_rows.get(site, [])
+        if not rows_for_site:
+            continue
+        # Deduplicate by (l2_id, page_url) with fallback to block_name.
+        rows_sorted = sorted(rows_for_site, key=lambda r: (str(r.get("page_url") or ""), int(r.get("block_index") or 0)))
+        seen: set[tuple[str, str]] = set()
+        compact: list[dict] = []
+        for row in rows_sorted:
+            key = (
+                str(row.get("page_url") or ""),
+                str(row.get("l2_id") or row.get("block_name") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            compact.append(row)
+        sheet2_lines.append(site)
+        col_values: list[str] = []
+        for idx, row in enumerate(compact, start=1):
+            block_id = str(row.get("l2_id") or "").strip()
+            block_label_ru = str(row.get("l2_label_ru") or "").strip()
+            block_name = str(row.get("block_name") or "").strip()
+            block = _format_block_display(block_label_ru, block_id, block_name)
+            notes = str(row.get("notes") or "").strip()
+            if notes:
+                line = f"{idx}. {block} — {notes}"
+                sheet2_lines.append(line)
+                col_values.append(f"{block} — {notes}")
+            else:
+                line = f"{idx}. {block}"
+                sheet2_lines.append(line)
+                col_values.append(block)
+        sheet2_lines.append("")
+        site_columns_values[site] = col_values
+
+    max_len = max((len(values) for values in site_columns_values.values()), default=0)
+    for i in range(max_len):
+        row: list[str] = []
+        for site in site_order:
+            values = site_columns_values.get(site, [])
+            row.append(values[i] if i < len(values) else "")
+        site_columns_rows.append(row)
+    sheet2_text = "\n".join(sheet2_lines).strip()
+
+    return sheet1_text, sheet2_text, matrix_rows, site_columns_rows
+
+
+def _matrix_has_non_first_site_checks(matrix_rows: list[list[str]]) -> bool:
+    if not matrix_rows or len(matrix_rows) < 2:
+        return False
+    header = matrix_rows[0]
+    if len(header) < 3:
+        return False
+    for row in matrix_rows[1:]:
+        if len(row) < len(header):
+            continue
+        for cell in row[2:]:
+            if str(cell or "").strip() == "✓":
+                return True
+    return False
+
+
 @app.post("/top10-urls")
 async def top10_urls(
     search_queries: str = Form(...),
@@ -1141,36 +1723,130 @@ async def top10_urls(
 @app.post("/analyze-competitors")
 async def analyze_competitors(
     competitor_urls: str = Form(...),
-    competitor_prompt_1: str = Form(...),
-    competitor_prompt_2: str = Form(...),
-    competitor_prompt_3: str = Form(...),
-    competitor_table_blocks_prompt: str = Form(...),
+    prompt_master: str = Form(""),
+    prompt_blocks: str = Form(""),
+    prompt_messages: str = Form(""),
+    prompt_summary: str = Form(""),
+    prompt_export_table: str = Form(""),
+    enabled_master: str | None = Form(None),
+    enabled_blocks: str | None = Form(None),
+    enabled_messages: str | None = Form(None),
+    enabled_summary: str | None = Form(None),
+    enabled_export: str | None = Form(None),
+    # Backward compatibility.
+    competitor_prompt_1: str = Form(""),
+    competitor_prompt_2: str = Form(""),
+    competitor_table_blocks_prompt: str = Form(""),
 ) -> JSONResponse:
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_screens_dir = SCREENSHOTS_DIR / f"competitors_{run_id}"
+    run_datetime = datetime.now().isoformat(timespec="seconds")
     result = {
         "run_id": run_id,
+        "run_datetime": run_datetime,
         "pages": [],
-        "analysis_sites": "",
+        "summary_general": "",
         "normalized_blocks": "",
         "analysis_meanings": "",
-        "structure_proposal": "",
+        "structures_rows": [],
+        "structures_rows_source": "no_structures_rows_found",
+        "structures_rows_count": 0,
+        "sheet1_matrix_rows": [],
+        "sheet2_site_columns_rows": [],
+        "export_matrix_ready": False,
+        "export_matrix_reason": "Матрица ещё не сформирована.",
+        "table_export_raw": "",
         "table_blocks_output": "",
+        "table_structure_output": "",
+        "export_stage_status": {"ok": True, "error": ""},
         "errors": [],
+        "section_status": {
+            "summary": {"enabled": False, "has_content": False, "reason": "disabled_by_user"},
+            "blocks": {"enabled": False, "has_content": False, "reason": "disabled_by_user"},
+            "meanings": {"enabled": False, "has_content": False, "reason": "disabled_by_user"},
+        },
     }
 
     urls = _parse_urls(competitor_urls)
     if not urls:
         result["errors"].append("Добавьте хотя бы одну корректную ссылку для анализа конкурентов.")
         return JSONResponse(content=result)
-    competitor_prompt_1 = _normalize_competitor_prompt(competitor_prompt_1)
-    competitor_prompt_2 = _normalize_competitor_prompt(competitor_prompt_2)
-    competitor_prompt_3 = _normalize_competitor_prompt(competitor_prompt_3)
-    competitor_table_blocks_prompt = _normalize_competitor_prompt(competitor_table_blocks_prompt)
+    prompt_values = {
+        "master": _normalize_competitor_prompt(prompt_master or DEFAULT_COMPETITOR_PROMPTS["master"]),
+        "blocks": _normalize_competitor_prompt(prompt_blocks or competitor_prompt_1 or DEFAULT_COMPETITOR_PROMPTS["blocks"]),
+        "messages": _normalize_competitor_prompt(prompt_messages or competitor_prompt_2 or DEFAULT_COMPETITOR_PROMPTS["messages"]),
+        "summary": _normalize_competitor_prompt(prompt_summary or DEFAULT_COMPETITOR_PROMPTS["summary"]),
+        "export": _normalize_competitor_prompt(prompt_export_table or competitor_table_blocks_prompt or DEFAULT_COMPETITOR_PROMPTS["export"]),
+    }
+    enabled = {
+        "master": _is_enabled(enabled_master, DEFAULT_COMPETITOR_PROMPT_ENABLED["master"]),
+        "blocks": _is_enabled(enabled_blocks, DEFAULT_COMPETITOR_PROMPT_ENABLED["blocks"]),
+        "messages": _is_enabled(enabled_messages, DEFAULT_COMPETITOR_PROMPT_ENABLED["messages"]),
+        "summary": _is_enabled(enabled_summary, DEFAULT_COMPETITOR_PROMPT_ENABLED["summary"]),
+        "export": _is_enabled(enabled_export, DEFAULT_COMPETITOR_PROMPT_ENABLED["export"]),
+    }
+    result["section_status"]["blocks"]["enabled"] = enabled["blocks"]
+    result["section_status"]["meanings"]["enabled"] = enabled["messages"]
+    result["section_status"]["summary"]["enabled"] = enabled["summary"]
+    if enabled["blocks"]:
+        result["section_status"]["blocks"]["reason"] = "ok"
+    if enabled["messages"]:
+        result["section_status"]["meanings"]["reason"] = "ok"
+    if enabled["summary"]:
+        result["section_status"]["summary"]["reason"] = "ok"
 
-    if not competitor_prompt_1 or not competitor_prompt_2 or not competitor_prompt_3 or not competitor_table_blocks_prompt:
-        result["errors"].append("Заполните все промпты для анализа конкурентов.")
+    if not (enabled["blocks"] or enabled["messages"] or enabled["summary"]):
+        result["errors"].append(
+            "Включите хотя бы одну секцию отчёта (Общие выводы/Нормализованные блоки/Анализ смыслов)."
+        )
+        return JSONResponse(content=result, status_code=400)
+    required_prompts = {
+        "blocks": "Нормализованные блоки",
+        "messages": "Анализ смыслов",
+        "summary": "Общие выводы",
+        "export": "Экспорт в таблицу",
+    }
+    missing = [title for key, title in required_prompts.items() if enabled[key] and not prompt_values[key]]
+    if missing:
+        result["errors"].append(f"Пустые промпты: {', '.join(missing)}.")
         return JSONResponse(content=result)
+
+    def _map_section_reason_from_error(exc: Exception) -> str:
+        text = str(exc).lower()
+        if "insufficient_quota" in text or ("quota" in text and "429" in text):
+            return "openai_quota_exceeded"
+        if "429" in text:
+            return "openai_rate_limited"
+        return "llm_error"
+
+    def _reason_text(reason: str) -> str:
+        mapping = {
+            "ok": "ok",
+            "disabled_by_user": "секция отключена в расширенных настройках",
+            "llm_error": "ошибка генерации",
+            "empty_model_output": "модель вернула пустой ответ",
+            "openai_quota_exceeded": "превышена квота API OpenAI",
+            "openai_rate_limited": "превышен лимит запросов API OpenAI",
+        }
+        return mapping.get(reason, reason or "неизвестная причина")
+
+    def _section_placeholder(title: str, reason: str) -> str:
+        return f"## {title}\n\nРаздел не сформирован: {_reason_text(reason)}."
+
+    def _finalize_section(status_key: str, title: str, content_key: str) -> None:
+        section_state = result["section_status"][status_key]
+        content = str(result.get(content_key, "") or "").strip()
+        if content:
+            section_state["has_content"] = True
+            section_state["reason"] = "ok"
+            result[content_key] = content
+            return
+        if not section_state["enabled"]:
+            section_state["reason"] = "disabled_by_user"
+        elif section_state["reason"] == "ok":
+            section_state["reason"] = "empty_model_output"
+        section_state["has_content"] = False
+        result[content_key] = _section_placeholder(title, section_state["reason"])
 
     try:
         top_pages = [TopPage(url=url, visits=0) for url in urls]
@@ -1182,82 +1858,269 @@ async def analyze_competitors(
 
         llm = LLMClient()
         common_payload = {
+            "run_id": run_id,
+            "run_datetime": run_datetime,
             "pages": artifacts,
             "input_urls": urls,
         }
-        result["analysis_sites"] = await llm.analyze(
-            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_1_GUARD}\n\n{competitor_prompt_1}",
-            common_payload,
-        )
-        result["normalized_blocks"] = await llm.analyze(
-            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_1_GUARD}\n\n{competitor_table_blocks_prompt}",
-            {
-                **common_payload,
-                "analysis_sites": result["analysis_sites"],
-            },
-        )
-        result["table_blocks_output"] = result["normalized_blocks"]
-        result["analysis_meanings"] = await llm.analyze(
-            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_2_GUARD}\n\n{competitor_prompt_2}",
-            common_payload,
-        )
-        result["structure_proposal"] = await llm.analyze(
-            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_3_GUARD}\n\n{competitor_prompt_3}",
-            {
-                **common_payload,
-                "analysis_sites": result["analysis_sites"],
-                "analysis_meanings": result["analysis_meanings"],
-            },
-        )
+        if enabled["blocks"]:
+            blocks_prompt_parts = []
+            if enabled["master"] and prompt_values["master"]:
+                blocks_prompt_parts.append(
+                    "Контекст оркестрации: это подзадача нормализованных блоков. "
+                    "Выполняй только подзадачу блоков и не переходи к смысловому анализу."
+                )
+            blocks_prompt_parts.extend([COMPETITOR_RUNTIME_GUARD, COMPETITOR_STAGE_1_GUARD, prompt_values["blocks"]])
+            blocks_prompt = "\n\n".join(part for part in blocks_prompt_parts if part)
+            try:
+                result["normalized_blocks"] = await llm.analyze(blocks_prompt, common_payload)
+                extracted_rows, rows_source = _extract_competitor_structures_rows(result["normalized_blocks"])
+                result["structures_rows"] = extracted_rows
+                result["structures_rows_source"] = rows_source
+                result["structures_rows_count"] = len(extracted_rows)
+                if not result["structures_rows"]:
+                    result["export_matrix_ready"] = False
+                    result["export_matrix_reason"] = (
+                        "Не удалось выделить structures_rows из ответа блока «Нормализованные блоки». "
+                        "Будет использован текстовый fallback."
+                    )
+            except Exception as exc:  # noqa: BLE001
+                result["errors"].append(f"Нормализованные блоки: {exc}")
+                result["section_status"]["blocks"]["reason"] = _map_section_reason_from_error(exc)
 
-        (DATA_DIR / f"competitors_report_{run_id}.json").write_text(
-            json.dumps(result, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        if enabled["messages"]:
+            messages_prompt_parts = []
+            if enabled["master"] and prompt_values["master"]:
+                messages_prompt_parts.append(
+                    "Контекст оркестрации: это подзадача анализа смыслов. "
+                    "Запрещено описывать структуру блоков, последовательность секций и итоговую архитектуру."
+                )
+            messages_prompt_parts.extend([COMPETITOR_RUNTIME_GUARD, COMPETITOR_STAGE_2_GUARD, prompt_values["messages"]])
+            messages_prompt = "\n\n".join(part for part in messages_prompt_parts if part)
+            try:
+                result["analysis_meanings"] = await llm.analyze(messages_prompt, common_payload)
+            except Exception as exc:  # noqa: BLE001
+                result["errors"].append(f"Анализ смыслов: {exc}")
+                result["section_status"]["meanings"]["reason"] = _map_section_reason_from_error(exc)
+
+        if enabled["summary"]:
+            summary_prompt_parts = [COMPETITOR_RUNTIME_GUARD, prompt_values["summary"]]
+            if enabled["master"] and prompt_values["master"]:
+                summary_prompt_parts.insert(
+                    0,
+                    "Контекст оркестрации: это подзадача общих выводов. "
+                    "Используй результаты блоков и смыслов, не дублируй их дословно.",
+                )
+            summary_prompt = "\n\n".join(part for part in summary_prompt_parts if part)
+            try:
+                result["summary_general"] = await llm.analyze(
+                    summary_prompt,
+                    {
+                        **common_payload,
+                        "normalized_blocks": result["normalized_blocks"],
+                        "analysis_meanings": result["analysis_meanings"],
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
+                result["errors"].append(f"Общие выводы: {exc}")
+                result["section_status"]["summary"]["reason"] = _map_section_reason_from_error(exc)
+
+        _finalize_section("summary", "Общие выводы", "summary_general")
+        _finalize_section("blocks", "Нормализованные блоки", "normalized_blocks")
+        _finalize_section("meanings", "Анализ смыслов", "analysis_meanings")
+
+        if enabled["export"]:
+            try:
+                export_prompt_parts = [COMPETITOR_RUNTIME_GUARD, prompt_values["export"]]
+                if enabled["master"] and prompt_values["master"]:
+                    export_prompt_parts.insert(
+                        0,
+                        "Контекст оркестрации: это подзадача экспорта таблицы. "
+                        "Верни только данные для листов в требуемом формате.",
+                    )
+                export_prompt = "\n\n".join(part for part in export_prompt_parts if part)
+                result["table_export_raw"] = await llm.analyze(
+                    export_prompt,
+                    {
+                        **common_payload,
+                        "normalized_blocks": result["normalized_blocks"],
+                        "analysis_meanings": result["analysis_meanings"],
+                        "summary_general": result["summary_general"],
+                    },
+                )
+                sheet1_text = _extract_marked_sheet_text(result["table_export_raw"], "### SHEET_1")
+                sheet2_text = _extract_marked_sheet_text(result["table_export_raw"], "### SHEET_2")
+                if sheet1_text:
+                    result["table_blocks_output"] = sheet1_text
+                if sheet2_text:
+                    result["table_structure_output"] = sheet2_text
+            except Exception as exc:  # noqa: BLE001
+                result["export_stage_status"] = {"ok": False, "error": str(exc)}
+                result["errors"].append(f"Экспорт таблицы: {exc}")
+                result["export_matrix_ready"] = False
+                result["export_matrix_reason"] = "Ошибка шага экспорта таблицы. Выгружен fallback."
+
+        deterministic_sheet1, deterministic_sheet2, matrix_rows, site_columns_rows = _build_competitors_compare_and_site_text(
+            result["structures_rows"], artifacts
+        )
+        result["sheet1_matrix_rows"] = matrix_rows
+        result["sheet2_site_columns_rows"] = site_columns_rows
+        if matrix_rows and len(matrix_rows) > 1 and site_columns_rows and len(site_columns_rows) > 1:
+            result["export_matrix_ready"] = True
+            if result["structures_rows_source"] in {"service_data_json_block", "fenced_json_block", "raw_json_array_scan"}:
+                result["export_matrix_reason"] = "Восстановлен structures_rows из JSON-блока без маркера."
+            else:
+                result["export_matrix_reason"] = ""
+        else:
+            result["export_matrix_ready"] = False
+            if not result["export_matrix_reason"]:
+                result["export_matrix_reason"] = (
+                    "Недостаточно структурированных данных для матрицы. "
+                    "Выгрузка будет текстовым fallback."
+                )
+        if deterministic_sheet1:
+            result["table_blocks_output"] = deterministic_sheet1
+        elif not result.get("table_blocks_output"):
+            result["table_blocks_output"] = result["normalized_blocks"]
+
+        if deterministic_sheet2:
+            result["table_structure_output"] = deterministic_sheet2
+        elif not result.get("table_structure_output"):
+            # В fallback используем summary, чтобы второй лист не был пустым.
+            result["table_structure_output"] = result["summary_general"] or result["analysis_meanings"]
+
+        logger.info(
+            "competitors_run run_id=%s enabled_summary=%s enabled_blocks=%s enabled_meanings=%s enabled_export=%s "
+            "len_summary=%s len_blocks=%s len_meanings=%s structures_rows_count=%s export_matrix_ready=%s "
+            "export_matrix_reason=%s errors_count=%s reason_summary=%s reason_blocks=%s reason_meanings=%s "
+            "export_stage_ok=%s",
+            run_id,
+            enabled["summary"],
+            enabled["blocks"],
+            enabled["messages"],
+            enabled["export"],
+            len(result.get("summary_general", "")),
+            len(result.get("normalized_blocks", "")),
+            len(result.get("analysis_meanings", "")),
+            len(result.get("structures_rows", [])),
+            result.get("export_matrix_ready"),
+            result.get("export_matrix_reason", ""),
+            len(result.get("errors", [])),
+            result["section_status"]["summary"]["reason"],
+            result["section_status"]["blocks"]["reason"],
+            result["section_status"]["meanings"]["reason"],
+            result["export_stage_status"].get("ok"),
         )
     except Exception as exc:  # noqa: BLE001
+        result["export_matrix_ready"] = False
+        if not result.get("export_matrix_reason"):
+            result["export_matrix_reason"] = "Ошибка на этапе подготовки структурированных листов."
         result["errors"].append(str(exc))
+        logger.info(
+            "competitors_run_failed run_id=%s structures_rows_count=%s export_matrix_ready=%s "
+            "export_matrix_reason=%s errors_count=%s",
+            run_id,
+            len(result.get("structures_rows", [])),
+            result.get("export_matrix_ready"),
+            result.get("export_matrix_reason", ""),
+            len(result.get("errors", [])),
+        )
+    finally:
+        try:
+            (DATA_DIR / f"competitors_report_{run_id}.json").write_text(
+                json.dumps(result, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as write_exc:  # noqa: BLE001
+            logger.warning("Failed to persist competitors report run_id=%s: %s", run_id, write_exc)
 
     return JSONResponse(content=result)
 
 
 @app.post("/analyze-top10-structure")
 async def analyze_top10_structure(
-    search_queries: str = Form(...),
+    search_queries: str = Form(""),
     region_id: str = Form("225"),
     top10_urls: str = Form(""),
-    top10_prompt_1: str = Form(...),
-    top10_prompt_2: str = Form(...),
-    top10_table_blocks_prompt: str = Form(...),
-    top10_table_structure_prompt: str = Form(...),
+    prompt_master_top10: str = Form(""),
+    prompt_blocks_core: str = Form(""),
+    prompt_summary_norms: str = Form(""),
+    prompt_proposed_structure: str = Form(""),
+    prompt_export_optional: str = Form(""),
+    enabled_master_top10: str | None = Form(None),
+    enabled_blocks_core: str | None = Form(None),
+    enabled_summary_norms: str | None = Form(None),
+    enabled_proposed_structure: str | None = Form(None),
+    enabled_export_optional: str | None = Form(None),
+    # Backward compatibility.
+    top10_prompt_1: str = Form(""),
+    top10_prompt_2: str = Form(""),
+    top10_table_blocks_prompt: str = Form(""),
+    top10_table_structure_prompt: str = Form(""),
 ) -> JSONResponse:
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_datetime = datetime.now().isoformat(timespec="seconds")
     run_screens_dir = SCREENSHOTS_DIR / f"top10_{run_id}"
     result = {
         "run_id": run_id,
+        "run_datetime": run_datetime,
         "queries": [],
         "urls": [],
         "pages": [],
-        "analysis_structure": "",
+        "summary_report": "",
+        "normalized_blocks": "",
         "structure_proposal": "",
+        "structures_rows": [],
+        "structures_rows_source": "no_structures_rows_found",
+        "structures_rows_count": 0,
+        "sheet1_matrix_rows": [],
+        "sheet2_site_columns_rows": [],
+        "sheet3_proposed_rows": [],
+        "export_matrix_ready": False,
+        "export_matrix_reason": "Матрица ещё не сформирована.",
+        "export_structure_ready": False,
+        "export_structure_reason": "Лист предложенной структуры ещё не сформирован.",
+        "export_table_raw": "",
         "table_blocks_output": "",
         "table_structure_output": "",
         "errors": [],
     }
     queries = _parse_queries(search_queries)
     result["queries"] = queries
-    if not queries:
-        result["errors"].append("Добавьте хотя бы один поисковый запрос.")
-        return JSONResponse(content=result)
-
-    top10_prompt_1 = _normalize_competitor_prompt(top10_prompt_1)
-    top10_prompt_2 = _normalize_competitor_prompt(top10_prompt_2)
-    top10_table_blocks_prompt = _normalize_competitor_prompt(top10_table_blocks_prompt)
-    top10_table_structure_prompt = _normalize_competitor_prompt(top10_table_structure_prompt)
-    if not top10_prompt_1 or not top10_prompt_2 or not top10_table_blocks_prompt or not top10_table_structure_prompt:
-        result["errors"].append("Заполните все промпты top-10: анализ, структура и табличные форматы.")
-        return JSONResponse(content=result)
-
     manual_urls = _parse_urls(top10_urls)
+    if not queries and not manual_urls:
+        result["errors"].append("Добавьте поисковые запросы или заполните список URL вручную.")
+        return JSONResponse(content=result)
+
+    prompt_values = {
+        "master": _normalize_competitor_prompt(prompt_master_top10 or DEFAULT_TOP10_PROMPTS["master"]),
+        "blocks_core": _normalize_competitor_prompt(prompt_blocks_core or top10_prompt_1 or DEFAULT_TOP10_PROMPTS["blocks_core"]),
+        "summary_norms": _normalize_competitor_prompt(prompt_summary_norms or DEFAULT_TOP10_PROMPTS["summary_norms"]),
+        "proposed_structure": _normalize_competitor_prompt(prompt_proposed_structure or top10_prompt_2 or DEFAULT_TOP10_PROMPTS["proposed_structure"]),
+        "export_optional": _normalize_competitor_prompt(
+            prompt_export_optional
+            or top10_table_blocks_prompt
+            or top10_table_structure_prompt
+            or DEFAULT_TOP10_PROMPTS["export_optional"]
+        ),
+    }
+    enabled = {
+        "master": _is_enabled(enabled_master_top10, DEFAULT_TOP10_PROMPT_ENABLED["master"]),
+        "blocks_core": _is_enabled(enabled_blocks_core, DEFAULT_TOP10_PROMPT_ENABLED["blocks_core"]),
+        "summary_norms": _is_enabled(enabled_summary_norms, DEFAULT_TOP10_PROMPT_ENABLED["summary_norms"]),
+        "proposed_structure": _is_enabled(enabled_proposed_structure, DEFAULT_TOP10_PROMPT_ENABLED["proposed_structure"]),
+        "export_optional": _is_enabled(enabled_export_optional, DEFAULT_TOP10_PROMPT_ENABLED["export_optional"]),
+    }
+    required = {
+        "blocks_core": "Нормализованные блоки",
+        "summary_norms": "Общие выводы",
+        "proposed_structure": "Предложение по структуре",
+    }
+    missing = [title for key, title in required.items() if enabled[key] and not prompt_values[key]]
+    if missing:
+        result["errors"].append(f"Пустые промпты: {', '.join(missing)}.")
+        return JSONResponse(content=result)
+
     url_counts: list[dict[str, int | str]] = []
     if manual_urls:
         url_counts = [{"url": url, "count": 0} for url in manual_urls[:10]]
@@ -1296,41 +2159,143 @@ async def analyze_top10_structure(
 
         llm = LLMClient()
         common_payload = {
+            "run_id": run_id,
+            "run_datetime": run_datetime,
             "queries": queries,
             "top_urls": url_counts,
             "pages": artifacts,
         }
-        result["analysis_structure"] = await llm.analyze(
-            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_1_GUARD}\n\n{top10_prompt_1}",
-            common_payload,
+        if enabled["blocks_core"]:
+            blocks_prompt_parts = [COMPETITOR_RUNTIME_GUARD, COMPETITOR_STAGE_1_GUARD, prompt_values["blocks_core"]]
+            if enabled["master"] and prompt_values["master"]:
+                blocks_prompt_parts.insert(0, "Контекст оркестрации: шаг 1 из master-пайплайна top10.")
+            blocks_prompt = "\n\n".join(part for part in blocks_prompt_parts if part)
+            result["normalized_blocks"] = await llm.analyze(blocks_prompt, common_payload)
+            extracted_rows, rows_source = _extract_competitor_structures_rows(result["normalized_blocks"])
+            result["structures_rows"] = extracted_rows
+            result["structures_rows_source"] = rows_source
+            result["structures_rows_count"] = len(extracted_rows)
+            if not result["structures_rows"]:
+                result["export_matrix_ready"] = False
+                result["export_matrix_reason"] = (
+                    "Не удалось выделить structures_rows из ответа блока «Нормализованные блоки». "
+                    "Будет использован текстовый fallback."
+                )
+
+        if enabled["summary_norms"]:
+            summary_prompt_parts = [COMPETITOR_RUNTIME_GUARD, prompt_values["summary_norms"]]
+            if enabled["master"] and prompt_values["master"]:
+                summary_prompt_parts.insert(0, "Контекст оркестрации: шаг 2 из master-пайплайна top10.")
+            summary_prompt = "\n\n".join(part for part in summary_prompt_parts if part)
+            result["summary_report"] = await llm.analyze(
+                summary_prompt,
+                {
+                    **common_payload,
+                    "structures_rows": result["structures_rows"],
+                    "normalized_blocks": result["normalized_blocks"],
+                },
+            )
+
+        if enabled["proposed_structure"]:
+            proposal_prompt_parts = [COMPETITOR_RUNTIME_GUARD, prompt_values["proposed_structure"]]
+            if enabled["master"] and prompt_values["master"]:
+                proposal_prompt_parts.insert(0, "Контекст оркестрации: шаг 3 из master-пайплайна top10.")
+            proposal_prompt = "\n\n".join(part for part in proposal_prompt_parts if part)
+            result["structure_proposal"] = await llm.analyze(
+                proposal_prompt,
+                {
+                    **common_payload,
+                    "structures_rows": result["structures_rows"],
+                    "normalized_blocks": result["normalized_blocks"],
+                    "summary_report": result["summary_report"],
+                },
+            )
+
+        if enabled["export_optional"]:
+            export_prompt_parts = [COMPETITOR_RUNTIME_GUARD, prompt_values["export_optional"]]
+            if enabled["master"] and prompt_values["master"]:
+                export_prompt_parts.insert(0, "Контекст оркестрации: шаг 4 (опциональный экспорт).")
+            export_prompt = "\n\n".join(part for part in export_prompt_parts if part)
+            result["export_table_raw"] = await llm.analyze(
+                export_prompt,
+                {
+                    **common_payload,
+                    "structures_rows": result["structures_rows"],
+                    "proposed_structure_text": result["structure_proposal"],
+                },
+            )
+
+            compare_text = _extract_marked_sheet_text(result["export_table_raw"], "### SHEET_1_COMPARE")
+            proposal_table_text = _extract_marked_sheet_text(result["export_table_raw"], "### SHEET_2_PROPOSAL")
+            if compare_text:
+                result["table_blocks_output"] = compare_text
+            if proposal_table_text:
+                result["table_structure_output"] = proposal_table_text
+
+        deterministic_sheet1, deterministic_sheet2, matrix_rows, site_columns_rows = _build_competitors_compare_and_site_text(
+            result["structures_rows"], artifacts
         )
-        result["structure_proposal"] = await llm.analyze(
-            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_3_GUARD}\n\n{top10_prompt_2}",
-            {
-                **common_payload,
-                "analysis_structure": result["analysis_structure"],
-            },
+        result["sheet1_matrix_rows"] = matrix_rows
+        result["sheet2_site_columns_rows"] = site_columns_rows
+        expected_sites = len({_canonical_site(item.get("url") or "") for item in url_counts if item.get("url")})
+        matrix_has_sites = bool(matrix_rows and matrix_rows[0] and len(matrix_rows[0]) >= 2)
+        matrix_site_count = len(matrix_rows[0]) - 1 if matrix_has_sites else 0
+        matrix_has_rows = bool(len(matrix_rows) > 1 and site_columns_rows and len(site_columns_rows) > 1)
+        non_first_site_checks_ok = True
+        if expected_sites > 1:
+            if matrix_site_count < 2:
+                non_first_site_checks_ok = False
+            else:
+                non_first_site_checks_ok = _matrix_has_non_first_site_checks(matrix_rows)
+
+        if matrix_has_rows and non_first_site_checks_ok:
+            result["export_matrix_ready"] = True
+            if result["structures_rows_source"] in {"service_data_json_block", "fenced_json_block", "raw_json_array_scan"}:
+                result["export_matrix_reason"] = "Восстановлен structures_rows из JSON-блока без маркера."
+            else:
+                result["export_matrix_reason"] = ""
+        else:
+            result["export_matrix_ready"] = False
+            if expected_sites > 1 and matrix_site_count >= 2 and not non_first_site_checks_ok:
+                result["export_matrix_reason"] = (
+                    "Матрица собрана некорректно: галочки не распределились по всем сайтам. "
+                    "Выгрузка будет текстовым fallback."
+                )
+            elif not result["export_matrix_reason"]:
+                result["export_matrix_reason"] = (
+                    "Недостаточно структурированных данных для матрицы. "
+                    "Выгрузка будет текстовым fallback."
+                )
+
+        if deterministic_sheet1:
+            result["table_blocks_output"] = deterministic_sheet1
+        elif not result["table_blocks_output"]:
+            result["table_blocks_output"] = (
+                _build_blocks_comparison_from_rows(result["structures_rows"])
+                or result["summary_report"]
+                or result["normalized_blocks"]
+            )
+        if deterministic_sheet2:
+            result["table_structure_output"] = deterministic_sheet2
+        elif not result["table_structure_output"]:
+            result["table_structure_output"] = result["structure_proposal"]
+
+        proposed_rows, structure_ready, structure_reason = _build_top10_proposed_structure_rows(
+            result.get("table_structure_output", ""),
+            result.get("structure_proposal", ""),
         )
-        result["table_blocks_output"] = await llm.analyze(
-            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_1_GUARD}\n\n{top10_table_blocks_prompt}",
-            {
-                **common_payload,
-                "analysis_structure": result["analysis_structure"],
-            },
-        )
-        result["table_structure_output"] = await llm.analyze(
-            f"{COMPETITOR_RUNTIME_GUARD}\n\n{COMPETITOR_STAGE_3_GUARD}\n\n{top10_table_structure_prompt}",
-            {
-                **common_payload,
-                "structure_proposal": result["structure_proposal"],
-            },
-        )
+        result["sheet3_proposed_rows"] = proposed_rows
+        result["export_structure_ready"] = structure_ready
+        result["export_structure_reason"] = structure_reason
 
         (DATA_DIR / f"top10_report_{run_id}.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     except Exception as exc:  # noqa: BLE001
+        result["export_matrix_ready"] = False
+        if not result.get("export_matrix_reason"):
+            result["export_matrix_reason"] = "Ошибка на этапе подготовки структурированных листов."
         result["errors"].append(str(exc))
 
     return JSONResponse(content=result)
@@ -1493,7 +2458,8 @@ async def report_pdf(payload: dict = Body(...)) -> Response:
 
 @app.post("/export/google-sheets")
 async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
-    report_type = str(payload.get("report_type", "site"))
+    requested_report_type = str(payload.get("report_type", "site"))
+    report_type = requested_report_type
     report_payload = payload.get("payload")
     if not isinstance(report_payload, dict):
         return JSONResponse(content={"errors": ["Неверный формат payload для экспорта."]}, status_code=400)
@@ -1519,25 +2485,100 @@ async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
         # Для таблицы используем отдельные, строго нормализованные представления, если они есть.
         table_blocks = str(report_payload.get("table_blocks_output", "") or "").strip()
         table_structure = str(report_payload.get("table_structure_output", "") or "").strip()
+        matrix_rows = report_payload.get("sheet1_matrix_rows") or []
+        site_columns_rows = report_payload.get("sheet2_site_columns_rows") or []
+        proposed_rows = report_payload.get("sheet3_proposed_rows") or []
+        if isinstance(matrix_rows, list):
+            report_payload["sheet1_matrix_rows"] = matrix_rows
+        if isinstance(site_columns_rows, list):
+            report_payload["sheet2_site_columns_rows"] = site_columns_rows
+        if isinstance(proposed_rows, list):
+            report_payload["sheet3_proposed_rows"] = proposed_rows
+        report_payload["export_matrix_ready"] = bool(report_payload.get("export_matrix_ready"))
+        report_payload["export_matrix_reason"] = str(report_payload.get("export_matrix_reason") or "")
+        report_payload["export_structure_ready"] = bool(report_payload.get("export_structure_ready"))
+        report_payload["export_structure_reason"] = str(report_payload.get("export_structure_reason") or "")
+
+        matrix_ok, matrix_reason = _validate_sheet1_matrix_rows(matrix_rows)
+        sites_ok, sites_reason = _validate_sheet2_site_columns_rows(site_columns_rows)
+        structure_ok, structure_reason = _validate_sheet3_proposed_rows(proposed_rows)
+        if not (matrix_ok and sites_ok):
+            report_payload["export_matrix_ready"] = False
+            details = " ".join(part for part in [matrix_reason, sites_reason] if part).strip()
+            report_payload["export_matrix_reason"] = (
+                f"{report_payload['export_matrix_reason']} {details}".strip()
+                if report_payload["export_matrix_reason"]
+                else details or "Валидация матрицы не пройдена. Выгружен текстовый fallback."
+            )
+            report_payload["sheet1_matrix_rows"] = []
+            report_payload["sheet2_site_columns_rows"] = []
+        if not structure_ok:
+            report_payload["export_structure_ready"] = False
+            report_payload["export_structure_reason"] = (
+                f"{report_payload['export_structure_reason']} {structure_reason}".strip()
+                if report_payload["export_structure_reason"]
+                else structure_reason or "Валидация листа предложенной структуры не пройдена."
+            )
+            report_payload["sheet3_proposed_rows"] = [["Блок", "Комментарии по блоку"], ["Не удалось выделить структуру автоматически", str(table_structure or table_blocks or "")[:500]]]
+
+        report_payload["export_schema_version"] = "top10.v3.triple"
         if table_blocks:
             report_payload["analysis_structure"] = table_blocks
         if table_structure:
             report_payload["structure_proposal"] = table_structure
     elif report_type == "competitors":
-        # Экспорт конкурентов совместим с таблицей top10: лист 1 (блоки), лист 2 (структура).
-        table_blocks = str(report_payload.get("table_blocks_output", "") or report_payload.get("normalized_blocks", "")).strip()
-        if table_blocks:
-            report_payload["analysis_structure"] = table_blocks
-        elif report_payload.get("analysis_sites"):
-            report_payload["analysis_structure"] = str(report_payload.get("analysis_sites"))
-        if report_payload.get("structure_proposal"):
-            report_payload["structure_proposal"] = str(report_payload.get("structure_proposal"))
+        # Для Apps Script конкуренты отправляются в 2-листовом формате:
+        # Лист 1: сравнительный анализ (нормализованные блоки x сайты).
+        # Лист 2: структура каждого сайта (сайты в колонках, блоки под ними).
+        # analysis_structure/structure_proposal оставляем как текстовый fallback.
+        sheet1_text = str(report_payload.get("table_blocks_output", "") or report_payload.get("normalized_blocks", "")).strip()
+        sheet2_text = str(report_payload.get("table_structure_output", "") or report_payload.get("summary_general", "")).strip()
+        matrix_rows = report_payload.get("sheet1_matrix_rows") or []
+        site_columns_rows = report_payload.get("sheet2_site_columns_rows") or []
+        export_matrix_ready = bool(report_payload.get("export_matrix_ready"))
+        export_matrix_reason = str(report_payload.get("export_matrix_reason") or "")
+
+        matrix_ok, matrix_reason = _validate_sheet1_matrix_rows(matrix_rows)
+        sites_ok, sites_reason = _validate_sheet2_site_columns_rows(site_columns_rows)
+        if not (matrix_ok and sites_ok):
+            export_matrix_ready = False
+            details = " ".join(part for part in [matrix_reason, sites_reason] if part).strip()
+            export_matrix_reason = (
+                f"{export_matrix_reason} {details}".strip()
+                if export_matrix_reason
+                else details or "Валидация матрицы не пройдена. Выгружен текстовый fallback."
+            )
+            matrix_rows = []
+            site_columns_rows = []
+
+        if isinstance(matrix_rows, list):
+            report_payload["sheet1_matrix_rows"] = matrix_rows
+        if isinstance(site_columns_rows, list):
+            report_payload["sheet2_site_columns_rows"] = site_columns_rows
+        report_payload["export_matrix_ready"] = export_matrix_ready
+        report_payload["export_matrix_reason"] = export_matrix_reason
+        report_payload["analysis_structure"] = sheet1_text or sheet2_text
+        report_payload["structure_proposal"] = sheet2_text or sheet1_text
         report_type = "top10"
     try:
         from app.apps_script_sheets import AppsScriptSheetsExporter
 
         exporter = AppsScriptSheetsExporter(webhook_url=webhook_url)
         result = exporter.export(report_type, report_payload)
+        if requested_report_type == "top10":
+            has_compare = bool(str(result.get("compare_sheet") or "").strip())
+            has_sites = bool(str(result.get("sites_sheet") or "").strip())
+            has_structure = bool(str(result.get("structure_sheet") or "").strip())
+            if not (has_compare and has_sites and has_structure):
+                return JSONResponse(
+                    content={
+                        "errors": [
+                            "Скрипт Google Sheets не поддерживает экспорт top10.v3 "
+                            "(нужны compare_sheet, sites_sheet и structure_sheet)."
+                        ]
+                    },
+                    status_code=400,
+                )
         return JSONResponse(content=result)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(content={"errors": [str(exc)]}, status_code=400)

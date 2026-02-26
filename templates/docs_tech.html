@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AiНАЛИТИК — Техническая документация</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
+</head>
+<body>
+  <main class="page">
+    <section class="card app-topbar">
+      <a class="logo-link" href="/">
+        <img src="/static/logo.png" alt="" class="brand-logo" onerror="this.style.display='none'">
+        <span>AiНАЛИТИК</span>
+      </a>
+      <nav class="tool-nav" aria-label="Инструменты">
+        <div class="tool-item"><a class="tool-link" href="/">Аудит сайта</a></div>
+        <div class="tool-item"><a class="tool-link" href="/competitors">Анализ конкурентов</a></div>
+        <div class="tool-item"><a class="tool-link" href="/top10-structure">Структура по конкурентам</a></div>
+        <details class="tool-item tool-dropdown" open>
+          <summary class="tool-link active">Документация (ver. 0,1)</summary>
+          <nav class="tool-dropdown-menu" aria-label="Документация">
+            <a class="tool-dropdown-link" href="/docs/user">Пользовательская</a>
+            <a class="tool-dropdown-link active" href="/docs/tech">Техническая</a>
+          </nav>
+        </details>
+      </nav>
+      <a class="vibecoder-link" href="https://t.me/kotovskiysupport_bot" target="_blank" rel="noreferrer">Поддержка</a>
+    </section>
+
+    <section class="docs-grid">
+      <article class="card docs-card">
+        <h1>Техническая документация</h1>
+        <p><strong>Версия:</strong> 0,1</p>
+        <p>Проект построен на FastAPI с серверным рендерингом шаблонов Jinja2 и статическим фронтендом на vanilla JS.</p>
+      </article>
+
+      <article class="card docs-card">
+        <h2>1. Архитектура</h2>
+        <ul>
+          <li><code>/app/main.py</code> — HTTP-эндпоинты и оркестрация пайплайнов.</li>
+          <li><code>/app/llm.py</code> — клиент LLM API.</li>
+          <li><code>/app/crawler.py</code> — сбор скриншотов и текста страниц.</li>
+          <li><code>/templates/*.html</code> — страницы интерфейса.</li>
+          <li><code>/static/*.js</code>, <code>/static/styles.css</code> — логика и стили UI.</li>
+        </ul>
+      </article>
+
+      <article class="card docs-card">
+        <h2>2. Основные страницы и маршруты</h2>
+        <ul>
+          <li><code>GET /</code> — Аудит сайта.</li>
+          <li><code>GET /competitors</code> — Анализ конкурентов.</li>
+          <li><code>GET /top10-structure</code> — Структура по конкурентам.</li>
+          <li><code>GET /docs/user</code> — Пользовательская документация.</li>
+          <li><code>GET /docs/tech</code> — Техническая документация.</li>
+        </ul>
+      </article>
+
+      <article class="card docs-card">
+        <h2>3. Ключевые API-эндпоинты</h2>
+        <ul>
+          <li><code>POST /analyze</code> — аудит сайта.</li>
+          <li><code>POST /analyze-competitors</code> — отчёт по конкурентам.</li>
+          <li><code>POST /analyze-top10-structure</code> — построение структуры по конкурентам.</li>
+          <li><code>POST /top10-urls</code> — получение топ-10 URL из KeySo.</li>
+          <li><code>POST /export/google-sheets</code> — экспорт отчётов в Google Sheets.</li>
+        </ul>
+      </article>
+
+      <article class="card docs-card">
+        <h2>4. Данные и артефакты</h2>
+        <ul>
+          <li><code>/data/uploads</code> — загруженные файлы.</li>
+          <li><code>/data/screenshots</code> — скриншоты страниц.</li>
+          <li><code>/data/*_report_*.json</code> — сохранённые результаты запусков.</li>
+        </ul>
+      </article>
+
+      <article class="card docs-card">
+        <h2>5. Интеграции</h2>
+        <ul>
+          <li>OpenAI API — генерация аналитических блоков отчёта.</li>
+          <li>Yandex Metrika API — получение отчётов по счётчику.</li>
+          <li>KeySo API — сбор топ-URL по запросам.</li>
+          <li>Google Apps Script Webhook — экспорт в Google Sheets.</li>
+        </ul>
+      </article>
+
+      <article class="card docs-card">
+        <h2>6. Запуск локально</h2>
+        <ol>
+          <li>Заполнить <code>.env</code> (API-ключи и webhook URL).</li>
+          <li>Запустить контейнеры: <code>docker compose up -d --build</code>.</li>
+          <li>Открыть UI: <code>http://127.0.0.1:8011</code>.</li>
+        </ol>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

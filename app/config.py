@@ -29,6 +29,7 @@ class Settings:
     yandex_metrika_client_id: str = os.getenv("YANDEX_METRIKA_CLIENT_ID", "")
     yandex_metrika_client_secret: str = os.getenv("YANDEX_METRIKA_CLIENT_SECRET", "")
     yandex_metrika_redirect_uri: str = os.getenv("YANDEX_METRIKA_REDIRECT_URI", "")
+    strict_block_display_format: bool = os.getenv("STRICT_BLOCK_DISPLAY_FORMAT", "true").lower() == "true"
 
 
 settings = Settings()
