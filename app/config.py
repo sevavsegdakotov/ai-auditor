@@ -14,7 +14,8 @@ class Settings:
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.1")
     keyso_api_token: str = os.getenv("KEYSO_API_TOKEN", "")
     keyso_base_url: str = os.getenv("KEYSO_BASE_URL", "https://api.keys.so")
-    keyso_timeout_seconds: int = int(os.getenv("KEYSO_TIMEOUT_SECONDS", "45"))
+    keyso_timeout_seconds: int = int(os.getenv("KEYSO_TIMEOUT_SECONDS", "120"))
+    keyso_project_ready_timeout_seconds: int = int(os.getenv("KEYSO_PROJECT_READY_TIMEOUT_SECONDS", "600"))
     keyso_verify_ssl: bool = os.getenv("KEYSO_VERIFY_SSL", "true").lower() == "true"
     google_sheets_webhook_url_site: str = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL_SITE", "")
     google_sheets_webhook_url_competitors: str = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL_COMPETITORS", "")
@@ -23,8 +24,10 @@ class Settings:
     google_sheets_webhook_url: str = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL", "")
     google_sheets_webhook_token: str = os.getenv("GOOGLE_SHEETS_WEBHOOK_TOKEN", "")
     google_sheets_verify_ssl: bool = os.getenv("GOOGLE_SHEETS_VERIFY_SSL", "true").lower() == "true"
+    apps_script_timeout_seconds: int = int(os.getenv("APPS_SCRIPT_TIMEOUT_SECONDS", "180"))
     base_url: str = os.getenv("BASE_URL", "http://localhost:8000")
     headless: bool = os.getenv("HEADLESS", "true").lower() == "true"
+    crawler_page_timeout_ms: int = int(os.getenv("CRAWLER_PAGE_TIMEOUT_MS", "90000"))
     yandex_metrika_access_token: str = os.getenv("YANDEX_METRIKA_ACCESS_TOKEN", "")
     yandex_metrika_client_id: str = os.getenv("YANDEX_METRIKA_CLIENT_ID", "")
     yandex_metrika_client_secret: str = os.getenv("YANDEX_METRIKA_CLIENT_SECRET", "")

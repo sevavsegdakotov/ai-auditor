@@ -23,7 +23,7 @@ from app.llm import LLMClient
 from app.metrika_api import MetrikaApiError, MetrikaClient
 from app.metrics import TopPage, dataframe_preview, parse_metrics_files
 from app.competitor_prompts import DEFAULT_COMPETITOR_PROMPTS, DEFAULT_COMPETITOR_PROMPT_ENABLED
-from app.top10_prompts import DEFAULT_TOP10_PROMPTS, DEFAULT_TOP10_PROMPT_ENABLED
+from app.top10_prompts import DEFAULT_TOP10_PROMPTS, DEFAULT_TOP10_PROMPTS_LIGHT, DEFAULT_TOP10_PROMPT_ENABLED
 from app.site_audit_prompts import DEFAULT_SITE_PROMPTS, DEFAULT_SITE_PROMPT_ENABLED
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -518,6 +518,23 @@ async def top10_structure(request: Request) -> HTMLResponse:
             "default_top10_prompt_enabled": DEFAULT_TOP10_PROMPT_ENABLED,
             "default_region_id": "225",
             "default_region_name": "Россия",
+            "top10_variant": "normal",
+        },
+    )
+
+
+@app.get("/top10-structure-light", response_class=HTMLResponse)
+async def top10_structure_light(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "top10_structure.html",
+        {
+            "asset_version": datetime.now().strftime("%Y%m%d%H%M%S"),
+            "default_top10_prompts": DEFAULT_TOP10_PROMPTS_LIGHT,
+            "default_top10_prompt_enabled": DEFAULT_TOP10_PROMPT_ENABLED,
+            "default_region_id": "225",
+            "default_region_name": "Россия",
+            "top10_variant": "light",
         },
     )
 
@@ -1377,6 +1394,7 @@ def _extract_competitor_structures_rows(normalized_blocks_text: str) -> tuple[li
             {
                 "site": site,
                 "page_url": page_url,
+                "page_type": str(row.get("page_type") or "").strip(),
                 "l1_id": l1_id,
                 "l1_label_ru": l1_label_ru,
                 "l2_id": l2_id,
@@ -1499,17 +1517,111 @@ def _build_top10_proposed_structure_rows(
         "чек-лист рисков",
         "маршрут",
         "итоговая структура",
+        "по каждому шагу",
+        "эти 3–5 точек",
+        "эти 3-5 точек",
     )
     separators = (" — ", " – ", " - ", " → ", ": ")
+    stop_prefixes = (
+        "по каждому шагу",
+        "контроль cta",
+        "контроль распределения cta",
+        "контроль распределения",
+        "чек-лист рисков",
+    )
+
+    def _clean_line(raw_line: str) -> str:
+        return re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", str(raw_line or "").strip())
+
+    def _looks_like_block_name(value: str) -> bool:
+        text = _normalize_ws(value)
+        if not text or len(text) > 180:
+            return False
+        if "—" in text and "(" not in text:
+            return False
+        # Блоки в структуре почти всегда приходят в виде "Название (block_id)".
+        if re.search(r"\([a-z0-9_]{2,}\)\s*$", text):
+            return True
+        # Фолбек для лаконичных названий блоков без id.
+        words = text.split()
+        return 1 <= len(words) <= 8 and text[0].isalpha()
+
+    def _looks_like_section_header(value: str) -> bool:
+        text = _normalize_ws(value).lower().rstrip(":")
+        if text.startswith(stop_prefixes):
+            return True
+        return text in {"", "--", "контроль cta — рекомендуемые 3–5 точек", "контроль cta - рекомендуемые 3-5 точек"}
+
+    pending_block: str | None = None
+    collected = 0
+    last_data_row_idx: int | None = None
+
+    def _append_to_last_comment(extra_text: str) -> bool:
+        nonlocal last_data_row_idx
+        if last_data_row_idx is None:
+            return False
+        if not extra_text:
+            return False
+        current_comment = _normalize_ws(parsed_rows[last_data_row_idx][1])
+        parsed_rows[last_data_row_idx][1] = (
+            f"{current_comment} {extra_text}".strip() if current_comment else extra_text
+        )
+        return True
 
     for raw in source_text.replace("\r", "").split("\n"):
-        line = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", str(raw or "").strip())
+        line = _clean_line(raw)
         if not line:
             continue
         if line.startswith("#") or line.startswith("```"):
             continue
+        md_link = re.match(r"^\[([^\]]+)\]\((https?://[^)]+)\)$", line.strip(), flags=re.IGNORECASE)
+        if md_link:
+            label = md_link.group(1).strip().lower()
+            if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(?:/.*)?$", label):
+                continue
+        if re.match(r"^https?://", line.lower()):
+            continue
+        if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(?:/.*)?$", line.lower()):
+            continue
+        if _looks_like_section_header(line):
+            if collected > 0:
+                break
+            continue
         if line.lower().startswith(skip_prefixes):
             continue
+
+        lower_line = line.lower()
+        if lower_line.startswith(("почему", "зачем", "обоснование", "причина")):
+            comment_tail = _normalize_ws(re.sub(r"^(почему|зачем|обоснование|причина)\s*[:\-—]?\s*", "", line, flags=re.IGNORECASE))
+            if _append_to_last_comment(comment_tail):
+                continue
+
+        # Двухстрочный формат: "Блок (...)" на одной строке и комментарий на следующей.
+        if pending_block:
+            comment_candidate = _normalize_ws(line.lstrip("—-").strip())
+            if comment_candidate and not _looks_like_block_name(comment_candidate):
+                parsed_rows.append([pending_block, comment_candidate])
+                collected += 1
+                last_data_row_idx = len(parsed_rows) - 1
+                pending_block = None
+                continue
+            # Если вместо комментария сразу пошёл новый блок, запишем предыдущий пустым и продолжим.
+            parsed_rows.append([pending_block, ""])
+            collected += 1
+            last_data_row_idx = len(parsed_rows) - 1
+            pending_block = None
+
+        # TSV/двухколоночный формат.
+        if "\t" in line:
+            parts = [p.strip() for p in line.split("\t") if p.strip()]
+            if len(parts) >= 2:
+                block = _normalize_ws(parts[0])
+                comment = _normalize_ws(" — ".join(parts[1:]))
+                if _looks_like_block_name(block):
+                    parsed_rows.append([block, comment])
+                    collected += 1
+                    last_data_row_idx = len(parsed_rows) - 1
+                    continue
 
         block = line
         comment = ""
@@ -1518,10 +1630,23 @@ def _build_top10_proposed_structure_rows(
                 left, right = line.split(sep, 1)
                 left = left.strip()
                 right = right.strip()
-                if left and right and len(left) <= 140:
+                if left and right and len(left) <= 180 and _looks_like_block_name(left):
                     block, comment = left, right
                     break
-        parsed_rows.append([block, comment])
+        if comment:
+            parsed_rows.append([_normalize_ws(block), _normalize_ws(comment)])
+            collected += 1
+            last_data_row_idx = len(parsed_rows) - 1
+            continue
+
+        if _looks_like_block_name(block):
+            pending_block = _normalize_ws(block)
+            continue
+
+    if pending_block:
+        parsed_rows.append([pending_block, ""])
+        collected += 1
+        last_data_row_idx = len(parsed_rows) - 1
 
     if len(parsed_rows) <= 1:
         compact = _normalize_ws(source_text)
@@ -2042,6 +2167,7 @@ async def analyze_top10_structure(
     search_queries: str = Form(""),
     region_id: str = Form("225"),
     top10_urls: str = Form(""),
+    top10_variant: str = Form("normal"),
     prompt_master_top10: str = Form(""),
     prompt_blocks_core: str = Form(""),
     prompt_summary_norms: str = Form(""),
@@ -2061,9 +2187,13 @@ async def analyze_top10_structure(
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_datetime = datetime.now().isoformat(timespec="seconds")
     run_screens_dir = SCREENSHOTS_DIR / f"top10_{run_id}"
+    normalized_variant = "light" if str(top10_variant or "").strip().lower() == "light" else "normal"
+    active_top10_prompts = DEFAULT_TOP10_PROMPTS_LIGHT if normalized_variant == "light" else DEFAULT_TOP10_PROMPTS
     result = {
         "run_id": run_id,
         "run_datetime": run_datetime,
+        "top10_variant": normalized_variant,
+        "top10_variant_label": "Light" if normalized_variant == "light" else "Обычный",
         "queries": [],
         "urls": [],
         "pages": [],
@@ -2083,6 +2213,7 @@ async def analyze_top10_structure(
         "export_table_raw": "",
         "table_blocks_output": "",
         "table_structure_output": "",
+        "table_proposed_output": "",
         "errors": [],
     }
     queries = _parse_queries(search_queries)
@@ -2093,15 +2224,15 @@ async def analyze_top10_structure(
         return JSONResponse(content=result)
 
     prompt_values = {
-        "master": _normalize_competitor_prompt(prompt_master_top10 or DEFAULT_TOP10_PROMPTS["master"]),
-        "blocks_core": _normalize_competitor_prompt(prompt_blocks_core or top10_prompt_1 or DEFAULT_TOP10_PROMPTS["blocks_core"]),
-        "summary_norms": _normalize_competitor_prompt(prompt_summary_norms or DEFAULT_TOP10_PROMPTS["summary_norms"]),
-        "proposed_structure": _normalize_competitor_prompt(prompt_proposed_structure or top10_prompt_2 or DEFAULT_TOP10_PROMPTS["proposed_structure"]),
+        "master": _normalize_competitor_prompt(prompt_master_top10 or active_top10_prompts["master"]),
+        "blocks_core": _normalize_competitor_prompt(prompt_blocks_core or top10_prompt_1 or active_top10_prompts["blocks_core"]),
+        "summary_norms": _normalize_competitor_prompt(prompt_summary_norms or active_top10_prompts["summary_norms"]),
+        "proposed_structure": _normalize_competitor_prompt(prompt_proposed_structure or top10_prompt_2 or active_top10_prompts["proposed_structure"]),
         "export_optional": _normalize_competitor_prompt(
             prompt_export_optional
             or top10_table_blocks_prompt
             or top10_table_structure_prompt
-            or DEFAULT_TOP10_PROMPTS["export_optional"]
+            or active_top10_prompts["export_optional"]
         ),
     }
     enabled = {
@@ -2229,8 +2360,10 @@ async def analyze_top10_structure(
             proposal_table_text = _extract_marked_sheet_text(result["export_table_raw"], "### SHEET_2_PROPOSAL")
             if compare_text:
                 result["table_blocks_output"] = compare_text
-            if proposal_table_text:
-                result["table_structure_output"] = proposal_table_text
+            # Для листа "Предложенная структура" приоритет у полноценной вкладки structure_proposal.
+            # SHEET_2_PROPOSAL используем только как запасной источник, если основной отсутствует.
+            if proposal_table_text and not result.get("structure_proposal"):
+                result["table_proposed_output"] = proposal_table_text
 
         deterministic_sheet1, deterministic_sheet2, matrix_rows, site_columns_rows = _build_competitors_compare_and_site_text(
             result["structures_rows"], artifacts
@@ -2280,8 +2413,12 @@ async def analyze_top10_structure(
         elif not result["table_structure_output"]:
             result["table_structure_output"] = result["structure_proposal"]
 
+        # Явно фиксируем источник для листа "structure": только из вкладки "Предложение по структуре".
+        # Это защищает от случаев, когда export_optional вернул посайтовый список вместо итогового конструктора.
+        result["table_proposed_output"] = result["structure_proposal"] or result.get("table_proposed_output", "")
+
         proposed_rows, structure_ready, structure_reason = _build_top10_proposed_structure_rows(
-            result.get("table_structure_output", ""),
+            result.get("table_proposed_output", ""),
             result.get("structure_proposal", ""),
         )
         result["sheet3_proposed_rows"] = proposed_rows
@@ -2485,6 +2622,11 @@ async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
         # Для таблицы используем отдельные, строго нормализованные представления, если они есть.
         table_blocks = str(report_payload.get("table_blocks_output", "") or "").strip()
         table_structure = str(report_payload.get("table_structure_output", "") or "").strip()
+        table_proposed = str(
+            report_payload.get("table_proposed_output", "")
+            or report_payload.get("structure_proposal", "")
+            or ""
+        ).strip()
         matrix_rows = report_payload.get("sheet1_matrix_rows") or []
         site_columns_rows = report_payload.get("sheet2_site_columns_rows") or []
         proposed_rows = report_payload.get("sheet3_proposed_rows") or []
@@ -2519,13 +2661,13 @@ async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
                 if report_payload["export_structure_reason"]
                 else structure_reason or "Валидация листа предложенной структуры не пройдена."
             )
-            report_payload["sheet3_proposed_rows"] = [["Блок", "Комментарии по блоку"], ["Не удалось выделить структуру автоматически", str(table_structure or table_blocks or "")[:500]]]
+            report_payload["sheet3_proposed_rows"] = [["Блок", "Комментарии по блоку"], ["Не удалось выделить структуру автоматически", str(table_proposed or table_structure or table_blocks or "")[:500]]]
 
         report_payload["export_schema_version"] = "top10.v3.triple"
         if table_blocks:
             report_payload["analysis_structure"] = table_blocks
-        if table_structure:
-            report_payload["structure_proposal"] = table_structure
+        if table_proposed:
+            report_payload["structure_proposal"] = table_proposed
     elif report_type == "competitors":
         # Для Apps Script конкуренты отправляются в 2-листовом формате:
         # Лист 1: сравнительный анализ (нормализованные блоки x сайты).

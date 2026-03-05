@@ -32,7 +32,7 @@ def _extract_text(html: str, max_chars: int = 5000) -> str:
 async def _capture_page(browser: Browser, url: str, viewport: dict[str, int], screenshot_path: Path) -> tuple[str, str]:
     context = await browser.new_context(viewport=viewport)
     page = await context.new_page()
-    await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+    await page.goto(url, wait_until="domcontentloaded", timeout=settings.crawler_page_timeout_ms)
     await page.wait_for_timeout(1000)
     html = await page.content()
     title = await page.title()

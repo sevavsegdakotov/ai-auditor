@@ -5,10 +5,12 @@
   const structureMode = document.getElementById("structure-mode");
   const top10SourceBlock = document.getElementById("top10-source-block");
   const queriesField = document.getElementById("top10-queries");
+  const queriesFieldLabel = queriesField ? queriesField.closest(".field-label") : null;
   const regionSearchField = document.getElementById("top10-region-search");
   const regionField = document.getElementById("top10-region-id");
   const regionList = document.getElementById("top10-region-list");
   const regionHint = document.getElementById("top10-region-hint");
+  const regionFieldLabel = regionSearchField ? regionSearchField.closest(".field-label") : null;
   const urlsField = document.getElementById("top10-urls");
   const fetchStatus = document.getElementById("top10-fetch-status");
   const showBtn = document.getElementById("top10-show-btn");
@@ -27,6 +29,9 @@
   const errorsBox = document.getElementById("top10-errors");
 
   const urlsUsedDoc = document.getElementById("top10-urls-used-doc");
+  const lightOverviewWrap = document.getElementById("top10-light-overview-wrap");
+  const lightOverviewDoc = document.getElementById("top10-light-overview-doc");
+  const lightOverviewToc = document.getElementById("top10-light-overview-toc");
   const summaryDoc = document.getElementById("top10-summary-doc");
   const blocksDoc = document.getElementById("top10-analysis-structure-doc");
   const structureDoc = document.getElementById("top10-structure-proposal-doc");
@@ -37,6 +42,8 @@
 
   const pagesGrid = document.getElementById("top10-pages-grid");
   const exportSheetsBtn = document.getElementById("top10-export-sheets-btn");
+  const exportSuccessModal = document.getElementById("top10-export-success-modal");
+  const exportSuccessClose = document.getElementById("top10-export-success-close");
 
   const promptDefaultsNode = document.getElementById("top10-prompts-defaults");
   const promptDefaults = (() => {
@@ -72,6 +79,27 @@
     const ss = String(safe % 60).padStart(2, "0");
     return `~${mm}:${ss}`;
   };
+
+  const closeExportSuccessModal = () => {
+    if (!exportSuccessModal) return;
+    exportSuccessModal.classList.add("hidden");
+    exportSuccessModal.setAttribute("aria-hidden", "true");
+  };
+
+  const openExportSuccessModal = () => {
+    if (!exportSuccessModal) return;
+    exportSuccessModal.classList.remove("hidden");
+    exportSuccessModal.setAttribute("aria-hidden", "false");
+  };
+
+  if (exportSuccessClose) {
+    exportSuccessClose.addEventListener("click", closeExportSuccessModal);
+  }
+  if (exportSuccessModal) {
+    exportSuccessModal.addEventListener("click", (event) => {
+      if (event.target === exportSuccessModal) closeExportSuccessModal();
+    });
+  }
 
   const updateProgress = () => {
     const elapsed = (Date.now() - startTs) / 1000;
@@ -457,12 +485,115 @@
     });
   };
 
+  const humanizeBlockName = (value) => {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    const mRuWithId = text.match(/^(.+?)\s*\(([a-z0-9_/-]+)\)\s*$/i);
+    if (mRuWithId && /[А-Яа-яЁё]/.test(mRuWithId[1])) return mRuWithId[1].trim();
+    const mIdWithRu = text.match(/^([a-z0-9_/-]+)\s*\((.+?)\)\s*$/i);
+    if (mIdWithRu && /[А-Яа-яЁё]/.test(mIdWithRu[2])) return mIdWithRu[2].trim();
+    if (/^[a-z0-9_/-]+$/i.test(text)) {
+      const normalized = text.replace(/[\/_-]+/g, " ").trim();
+      if (!normalized) return text;
+      return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    }
+    return text;
+  };
+
+  const inferTypeFromUrl = (url) => {
+    const source = String(url || "").toLowerCase();
+    if (!source) return "не определён";
+    if (/(blog|article|news|media|wiki|academy|guide|faq)/.test(source)) return "контентная";
+    return "сервисная";
+  };
+
+  const buildLightOverviewMd = (payload) => {
+    const urls = (payload.urls || []).map((item) => String(item.url || "").trim()).filter(Boolean);
+    const urlList = urls.length > 0 ? urls : (payload.pages || []).map((p) => String(p.url || "").trim()).filter(Boolean);
+    const urlLines = urlList.length > 0
+      ? urlList.map((url, index) => `${index + 1}. ${url}`).join("\n")
+      : "— список страниц не получен.";
+
+    const rows = Array.isArray(payload.structures_rows) ? payload.structures_rows : [];
+    const explicitTypes = rows
+      .map((row) => String(row.page_type || "").trim().toLowerCase())
+      .filter(Boolean);
+    let serviceCount = explicitTypes.filter((t) => t === "service").length;
+    let articleCount = explicitTypes.filter((t) => t === "portal_article").length;
+    if (!explicitTypes.length && urlList.length) {
+      const inferred = urlList.map((url) => inferTypeFromUrl(url));
+      serviceCount = inferred.filter((t) => t === "сервисная").length;
+      articleCount = inferred.filter((t) => t === "контентная").length;
+    }
+    const unknownCount = Math.max(0, urlList.length - serviceCount - articleCount);
+    const typeLines = [
+      `- Сервисные: ${serviceCount}`,
+      `- Контентные/портальные: ${articleCount}`,
+    ];
+    if (unknownCount > 0) typeLines.push(`- Не определены: ${unknownCount}`);
+
+    const proposedRows = Array.isArray(payload.sheet3_proposed_rows) ? payload.sheet3_proposed_rows : [];
+    const blockLines = [];
+    for (let i = 1; i < proposedRows.length; i += 1) {
+      const row = proposedRows[i];
+      if (!Array.isArray(row) || row.length < 1) continue;
+      const raw = String(row[0] || "").trim();
+      if (!raw) continue;
+      if (/не удалось выделить структуру/i.test(raw)) continue;
+      const block = humanizeBlockName(raw);
+      if (!block) continue;
+      if (blockLines.includes(block)) continue;
+      blockLines.push(block);
+      if (blockLines.length >= 14) break;
+    }
+    if (!blockLines.length) {
+      const fallback = String(payload.structure_proposal || "")
+        .split("\n")
+        .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").trim())
+        .filter((line) => line && !line.startsWith("#"))
+        .slice(0, 10)
+        .map(humanizeBlockName);
+      fallback.forEach((item) => {
+        if (item && !blockLines.includes(item)) blockLines.push(item);
+      });
+    }
+    const structureLines = blockLines.length
+      ? blockLines.map((block, index) => `${index + 1}. ${block}`).join("\n")
+      : "1. Структура не извлечена автоматически.";
+
+    return [
+      "## Коротко по выборке",
+      "",
+      "Я проанализировал страницы:",
+      urlLines,
+      "",
+      "Выявленные типы страниц:",
+      ...typeLines,
+      "",
+      "Исходя из этого, рекомендую такую структуру страницы:",
+      structureLines,
+    ].join("\n");
+  };
+
   const renderResult = (payload) => {
     lastResult = payload;
     emptyState.classList.add("hidden");
     resultView.classList.remove("hidden");
     runTitle.textContent = `Отчёт: структура по конкурентам ${payload.run_id || ""}`.trim();
     renderStatusNotice(payload);
+
+    if (lightOverviewWrap && lightOverviewDoc && lightOverviewToc) {
+      const isLight = String(payload.top10_variant || "").toLowerCase() === "light";
+      if (isLight) {
+        const overview = buildLightOverviewMd(payload);
+        lightOverviewWrap.classList.remove("hidden");
+        renderDoc(prettifyTaxonomyText(overview), lightOverviewToc, lightOverviewDoc, "Коротко", "top10-light-overview");
+      } else {
+        lightOverviewWrap.classList.add("hidden");
+        lightOverviewDoc.innerHTML = "";
+        lightOverviewToc.innerHTML = "";
+      }
+    }
 
     const urls = payload.urls || [];
     const urlsText = urls.length > 0
@@ -491,7 +622,12 @@
 
   const syncStructureMode = () => {
     const isTop10Mode = !structureMode || structureMode.value === "top10";
-    if (top10SourceBlock) top10SourceBlock.classList.toggle("hidden", !isTop10Mode);
+    if (queriesFieldLabel) queriesFieldLabel.classList.toggle("hidden", !isTop10Mode);
+    if (regionFieldLabel) regionFieldLabel.classList.toggle("hidden", !isTop10Mode);
+    if (top10SourceBlock) {
+      const title = top10SourceBlock.querySelector("h2");
+      if (title) title.classList.toggle("hidden", !isTop10Mode);
+    }
     if (showBtn) showBtn.classList.toggle("hidden", !isTop10Mode);
     if (queriesField) queriesField.required = isTop10Mode;
     if (fetchStatus && !isTop10Mode) fetchStatus.classList.add("hidden");
@@ -511,6 +647,13 @@
     }
     const region = (regionField.value || "225").trim();
     return { queries, region };
+  };
+
+  const scrollToUrlsList = () => {
+    if (!urlsField) return;
+    const targetSection = urlsField.closest(".form-section") || urlsField;
+    if (!targetSection || typeof targetSection.scrollIntoView !== "function") return;
+    targetSection.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const showTop10 = async () => {
@@ -542,6 +685,7 @@
       if (payload.urls && payload.urls.length > 0) {
         urlsField.value = payload.urls.map((row) => row.url).join("\n");
         if (fetchStatus) fetchStatus.textContent = `Готово: найдено ${payload.urls.length} URL.`;
+        scrollToUrlsList();
       } else if (fetchStatus) {
         fetchStatus.textContent = payload.errors && payload.errors.length > 0
           ? payload.errors[0]
@@ -746,6 +890,7 @@
         urls.forEach((url) => {
           if (url) window.open(url, "_blank", "noopener,noreferrer");
         });
+        openExportSuccessModal();
         renderErrors([]);
         exportSheetsBtn.textContent = "Готово";
       } catch (error) {

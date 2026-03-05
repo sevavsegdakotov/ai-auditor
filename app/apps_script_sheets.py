@@ -62,7 +62,7 @@ class AppsScriptSheetsExporter:
             method="POST",
         )
         try:
-            with urlopen(req, timeout=60, context=self.ssl_context) as resp:  # noqa: S310
+            with urlopen(req, timeout=settings.apps_script_timeout_seconds, context=self.ssl_context) as resp:  # noqa: S310
                 raw = resp.read().decode("utf-8")
         except HTTPError as exc:
             details = ""

@@ -15,18 +15,24 @@
         <span>AiНАЛИТИК</span>
       </a>
       <nav class="tool-nav" aria-label="Инструменты">
-        <div class="tool-item">
-          <a class="tool-link" href="/">Аудит сайта</a>
-          <button class="help-icon-btn tool-help-btn" type="button" data-help-title="Аудит сайта" data-help-text="Инструмент для трёх сценариев: «Аудит по ссылке», «Аудит по выгрузке» и «Аудит по Метрике».">?</button>
-        </div>
-        <div class="tool-item">
-          <a class="tool-link" href="/competitors">Анализ конкурентов</a>
-          <button class="help-icon-btn tool-help-btn" type="button" data-help-title="Анализ конкурентов" data-help-text="Собирает скриншоты и текст страниц конкурентов, затем формирует вкладки: общие выводы, нормализованные блоки и анализ смыслов.">?</button>
-        </div>
-        <div class="tool-item">
-          <a class="tool-link active" href="/top10-structure">Структура по конкурентам</a>
-          <button class="help-icon-btn tool-help-btn" type="button" data-help-title="Структура по конкурентам" data-help-text="Два режима: «Структура по топ-10» и «Структура по списку сайтов», с построением оптимальной структуры.">?</button>
-        </div>
+        <details class="tool-item tool-dropdown" open>
+          <summary class="tool-link active">Структура по топ-10</summary>
+          <nav class="tool-dropdown-menu" aria-label="Версии структуры по топ-10">
+            <a class="tool-dropdown-link {% if top10_variant != 'light' %}active{% endif %}" href="/top10-structure">Обычный</a>
+            <a class="tool-dropdown-link {% if top10_variant == 'light' %}active{% endif %}" href="/top10-structure-light">Light</a>
+          </nav>
+        </details>
+        <button class="help-icon-btn tool-help-btn" type="button" data-help-title="Структура по топ-10" data-help-text="Две версии инструмента: «Обычный» и «Light» для построения структуры по конкурентам.">?</button>
+
+        <details class="tool-item tool-dropdown">
+          <summary class="tool-link">Тестовые функции</summary>
+          <nav class="tool-dropdown-menu" aria-label="Тестовые функции">
+            <a class="tool-dropdown-link" href="/">Аудит сайта</a>
+            <a class="tool-dropdown-link" href="/competitors">Анализ конкурентов</a>
+          </nav>
+        </details>
+        <button class="help-icon-btn tool-help-btn" type="button" data-help-title="Тестовые функции" data-help-text="Временный список режимов: «Аудит сайта» и «Анализ конкурентов».">?</button>
+
         <details class="tool-item tool-dropdown">
           <summary class="tool-link">Документация (ver. 0,1)</summary>
           <nav class="tool-dropdown-menu" aria-label="Документация">
@@ -43,6 +49,7 @@
         <form id="top10-form" class="form-grid">
           <section class="form-section">
             <h2>Вариант анализа</h2>
+            <input type="hidden" name="top10_variant" value="{% if top10_variant == 'light' %}light{% else %}normal{% endif %}">
             <label class="field-label">Режим
               <select id="structure-mode" name="structure_mode">
                 <option value="top10" selected>Структура по топ-10</option>
@@ -54,7 +61,7 @@
           <section id="top10-source-block" class="form-section">
             <h2>Сбор из top-10</h2>
             <label class="field-label">Список запросов (по одному в строке)
-              <textarea id="top10-queries" name="search_queries" rows="8" placeholder="купить диван\nдиван на заказ\nдиван москва"></textarea>
+              <textarea id="top10-queries" name="search_queries" rows="6" placeholder="купить диван\nдиван на заказ\nдиван москва"></textarea>
             </label>
             <label class="field-label">Регион
               <input id="top10-region-search" type="text" list="top10-region-list" value="{{ default_region_name }} ({{ default_region_id }})" placeholder="Начните вводить: Пер...">
@@ -63,6 +70,7 @@
               <span id="top10-region-hint" class="muted">Выбран регион: {{ default_region_name }} ({{ default_region_id }})</span>
             </label>
             <div class="actions-row">
+              <button id="top10-build-btn" class="btn-primary" type="submit">Строить структуру</button>
               <button id="top10-show-btn" class="btn-secondary" type="button">Показать топ-10</button>
             </div>
           </section>
@@ -73,9 +81,6 @@
               <textarea id="top10-urls" name="top10_urls" rows="8" placeholder="https://example1.com\nhttps://example2.com"></textarea>
               <span id="top10-fetch-status" class="muted hidden">Собираю топ-10…</span>
             </label>
-            <div class="actions-row">
-              <button id="top10-build-btn" class="btn-primary" type="submit">Строить структуру</button>
-            </div>
           </section>
 
           <section class="form-section">
@@ -198,6 +203,11 @@
             </div>
             <div id="top10-errors" class="errors hidden"></div>
 
+            <div id="top10-light-overview-wrap" class="hidden">
+              <nav id="top10-light-overview-toc" class="report-toc" aria-label="Краткий обзор light"></nav>
+              <article id="top10-light-overview-doc" class="report-document"></article>
+            </div>
+
             <h3>Использованные URL</h3>
             <nav id="top10-urls-toc" class="report-toc" aria-label="Навигация списка URL"></nav>
             <article id="top10-urls-used-doc" class="report-document"></article>
@@ -238,6 +248,17 @@
         <button id="tool-help-close" class="help-icon-btn modal-close" type="button" aria-label="Закрыть">×</button>
       </div>
       <p id="tool-help-text" class="modal-text"></p>
+    </div>
+  </div>
+
+  <div id="top10-export-success-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="top10-export-success-title">
+      <div class="modal-head">
+        <h3 id="top10-export-success-title">Отправка в таблицу</h3>
+        <button id="top10-export-success-close" class="help-icon-btn modal-close" type="button" aria-label="Закрыть">×</button>
+      </div>
+      <p class="modal-text">Данные отправлены в таблицу. Она откроется в отдельной вкладке.</p>
+      <p class="modal-text">Не открылась? <a class="doc-link" href="https://docs.google.com/spreadsheets/d/1dIsCtz2K1N6zb_4CBY2iz4yXfhrh2BfClEYZVXapRn0/edit?usp=sharing" target="_blank" rel="noreferrer">Открыть вручную</a></p>
     </div>
   </div>
 

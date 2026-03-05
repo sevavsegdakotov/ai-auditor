@@ -15,9 +15,20 @@
         <span>AiНАЛИТИК</span>
       </a>
       <nav class="tool-nav" aria-label="Инструменты">
-        <div class="tool-item"><a class="tool-link" href="/">Аудит сайта</a></div>
-        <div class="tool-item"><a class="tool-link" href="/competitors">Анализ конкурентов</a></div>
-        <div class="tool-item"><a class="tool-link" href="/top10-structure">Структура по конкурентам</a></div>
+        <details class="tool-item tool-dropdown">
+          <summary class="tool-link">Структура по топ-10</summary>
+          <nav class="tool-dropdown-menu" aria-label="Версии структуры по топ-10">
+            <a class="tool-dropdown-link" href="/top10-structure">Обычный</a>
+            <a class="tool-dropdown-link" href="/top10-structure-light">Light</a>
+          </nav>
+        </details>
+        <details class="tool-item tool-dropdown">
+          <summary class="tool-link">Тестовые функции</summary>
+          <nav class="tool-dropdown-menu" aria-label="Тестовые функции">
+            <a class="tool-dropdown-link" href="/">Аудит сайта</a>
+            <a class="tool-dropdown-link" href="/competitors">Анализ конкурентов</a>
+          </nav>
+        </details>
         <details class="tool-item tool-dropdown" open>
           <summary class="tool-link active">Документация (ver. 0,1)</summary>
           <nav class="tool-dropdown-menu" aria-label="Документация">
@@ -53,6 +64,7 @@
           <li><code>GET /</code> — Аудит сайта.</li>
           <li><code>GET /competitors</code> — Анализ конкурентов.</li>
           <li><code>GET /top10-structure</code> — Структура по конкурентам.</li>
+          <li><code>GET /top10-structure-light</code> — Структура по конкурентам (Light).</li>
           <li><code>GET /docs/user</code> — Пользовательская документация.</li>
           <li><code>GET /docs/tech</code> — Техническая документация.</li>
         </ul>
@@ -98,5 +110,6 @@
       </article>
     </section>
   </main>
+  <script src="/static/topbar-help.js?v={{ asset_version }}" defer></script>
 </body>
 </html>

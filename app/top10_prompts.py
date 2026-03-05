@@ -294,6 +294,94 @@ Sheet B = предложение по оптимальной структуре 
 """,
 }
 
+DEFAULT_TOP10_PROMPTS_LIGHT = {
+    "master": """PROMPT_0_MASTER_TOP10_LIGHT
+Задача: на основе pages[] выдать 3 вкладки:
+1) Общие выводы
+2) Нормализованные блоки
+3) Предложение по структуре
+
+Правила:
+- Кратко, без воды.
+- Опирайся на скриншоты и текст.
+- Не выдумывай факты.
+- Во вкладках без таблиц, только списки.
+- Системные ID блоков: l1_id/l2_id/l3_id (EN snake_case).
+- Человекочитаемые названия: l1_label_ru/l2_label_ru/l3_label_ru (RU).
+
+Служебные данные в конце (обязательно):
+structures_rows:
+```json
+[ ... ]
+```
+""",
+    "blocks_core": """PROMPT_1_BLOCKS_CORE_LIGHT
+Цель: разметить структуру страниц и вернуть structures_rows.
+
+Что сделать:
+1) Для каждой страницы определить page_type: service|portal_article.
+2) Нормализовать блоки (12-18 основных l2_id, без раздутия).
+3) Вернуть краткий отчёт по вкладке «Нормализованные блоки».
+4) Вернуть structures_rows JSON.
+
+Обязательные поля строки structures_rows:
+site, page_url, page_type, block_index,
+l1_id, l1_label_ru, l2_id, l2_label_ru, l3_id, l3_label_ru,
+section, cta_present, cta_type, proof_type, confidence, notes.
+
+Ключевые правила:
+- CTA это атрибут, не отдельный блок.
+- authoritative ключ блока: l2_id.
+- block_name можно как fallback.
+
+ЧАСТЬ A: короткий отчёт (частоты X/N, top блоки, по страницам).
+ЧАСТЬ B:
+structures_rows:
+```json
+[ ... ]
+```
+""",
+    "summary_norms": """PROMPT_2_SUMMARY_NORMS_LIGHT
+Вход: structures_rows, pages, queries.
+Собери вкладку «Общие выводы» кратко:
+- Паспорт (N страниц, домены, режим).
+- Нормы структуры для service и portal_article (маршрут 6-10 шагов).
+- Must-have (>=70%), Nice-to-have (30-70%).
+- 3-5 дифференциаторов.
+- 3-5 антипаттернов.
+- Итоговый порядок блоков для service.
+
+Частоты: X/N и %.
+Показывай блоки как: <l2_label_ru> (<l2_id>).
+""",
+    "proposed_structure": """PROMPT_3_PROPOSED_STRUCTURE_LIGHT
+Вход: structures_rows.
+Собери вкладку «Предложение по структуре» только для service и confidence>=0.7.
+
+Вывод:
+1) Маршрут 8-12 шагов (блок + почему здесь).
+2) По каждому шагу:
+- цель (1 строка)
+- что внутри (3-5 пунктов)
+- CTA (тип)
+- proof_type
+3) Контроль CTA: рекомендуемые 3-5 точек.
+
+Используй l2_id как системный ключ, выводи RU+EN: <l2_label_ru> (<l2_id>).
+""",
+    "export_optional": """PROMPT_4_EXPORT_LIGHT
+Подготовь 2 текстовых секции fallback (без markdown-таблиц):
+
+### SHEET_1_COMPARE
+<l2_label_ru> (<l2_id>) — сайты: ... — встречаемость: X/N (%)
+
+### SHEET_2_PROPOSAL
+<l2_label_ru> (<l2_id>) — краткий комментарий по блоку
+
+Только подтверждённые блоки из structures_rows.
+""",
+}
+
 DEFAULT_TOP10_PROMPT_ENABLED = {
     "master": True,
     "blocks_core": True,

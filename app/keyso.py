@@ -197,7 +197,7 @@ class KeysoClient:
         project_id = int(project["id"])
         wait_error: RuntimeError | None = None
         try:
-            self._wait_project_ready(project_id, timeout_seconds=300)
+            self._wait_project_ready(project_id, timeout_seconds=settings.keyso_project_ready_timeout_seconds)
         except RuntimeError as exc:
             # У KeySo нередко зависает статус, но данные появляются позже.
             wait_error = exc

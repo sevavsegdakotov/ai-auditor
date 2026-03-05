@@ -1,4 +1,38 @@
 (() => {
+  const initTopbarDropdowns = () => {
+    const dropdowns = Array.from(document.querySelectorAll(".tool-nav .tool-dropdown"));
+    if (!dropdowns.length) return;
+
+    const closeAll = (except = null) => {
+      dropdowns.forEach((dropdown) => {
+        if (except && dropdown === except) return;
+        dropdown.open = false;
+      });
+    };
+
+    dropdowns.forEach((dropdown) => {
+      dropdown.addEventListener("toggle", () => {
+        if (dropdown.open) closeAll(dropdown);
+      });
+
+      dropdown.querySelectorAll(".tool-dropdown-link").forEach((link) => {
+        link.addEventListener("click", () => closeAll());
+      });
+    });
+
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (!target.closest(".tool-nav")) closeAll();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeAll();
+    });
+  };
+
+  initTopbarDropdowns();
+
   const modal = document.getElementById("tool-help-modal");
   const titleEl = document.getElementById("tool-help-title");
   const textEl = document.getElementById("tool-help-text");
