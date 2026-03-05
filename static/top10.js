@@ -166,7 +166,9 @@
   };
 
   const renderErrors = (errors, options = {}) => {
-    const list = Array.isArray(errors) ? errors.filter(Boolean) : [];
+    const list = Array.isArray(errors)
+      ? [...new Set(errors.map((item) => String(item || "").trim()).filter(Boolean))]
+      : [];
     const type = options.type || "error";
     const shortText = options.short || list[0] || "";
     if (list.length > 0) {
@@ -199,7 +201,9 @@
   };
 
   const renderStatusNotice = (payload) => {
-    const errors = payload.errors || [];
+    const errors = Array.isArray(payload.errors)
+      ? [...new Set(payload.errors.map((item) => String(item || "").trim()).filter(Boolean))]
+      : [];
     const reason = payload.export_matrix_reason || "";
     const source = payload.structures_rows_source || "";
     const recovered = ["service_data_json_block", "fenced_json_block", "raw_json_array_scan"].includes(source);
@@ -872,15 +876,35 @@
       exportSheetsBtn.disabled = true;
       exportSheetsBtn.textContent = "Отправляем…";
       try {
-        const response = await fetch("/export/google-sheets", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            report_type: "top10",
-            payload: lastResult,
-          }),
-        });
-        const payload = await response.json();
+        const exportPayload = {
+          report_type: "top10",
+          payload: lastResult,
+        };
+        let response = null;
+        let payload = null;
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          try {
+            response = await fetch("/export/google-sheets", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(exportPayload),
+            });
+            payload = await response.json();
+            break;
+          } catch (error) {
+            lastError = error;
+            if (attempt < 2) {
+              await new Promise((resolve) => setTimeout(resolve, 800));
+              continue;
+            }
+          }
+        }
+
+        if (!response || !payload) {
+          throw new Error(lastError ? String(lastError) : "Ошибка сети при экспорте.");
+        }
         if (!response.ok || (payload.errors && payload.errors.length > 0)) {
           throw new Error((payload.errors || []).join("; ") || "Ошибка экспорта");
         }
