@@ -66,18 +66,28 @@
   let progressTimer = null;
   let progress = 0;
   let startTs = 0;
-  let lastEtaSeconds = null;
-  let etaBecameWorse = false;
+  const PROGRESS_EXPECTED_SECONDS = 600;
   let regionFetchTimer = null;
   const regionMap = new Map();
   let lastResult = null;
   const docObservers = new Map();
 
-  const formatEta = (seconds) => {
-    const safe = Math.max(0, Math.round(seconds));
-    const mm = String(Math.floor(safe / 60)).padStart(2, "0");
-    const ss = String(safe % 60).padStart(2, "0");
-    return `~${mm}:${ss}`;
+  const calculateProgressByElapsed = (elapsedSeconds) => {
+    const t = Math.max(0, Number(elapsedSeconds) || 0);
+    let value = 3;
+    if (t <= 120) {
+      value = 3 + (22 * (t / 120)); // 3 -> 25
+    } else if (t <= 300) {
+      value = 25 + (30 * ((t - 120) / 180)); // 25 -> 55
+    } else if (t <= 480) {
+      value = 55 + (23 * ((t - 300) / 180)); // 55 -> 78
+    } else if (t <= PROGRESS_EXPECTED_SECONDS) {
+      value = 78 + (12 * ((t - 480) / (PROGRESS_EXPECTED_SECONDS - 480))); // 78 -> 90
+    } else {
+      const overshoot = t - PROGRESS_EXPECTED_SECONDS;
+      value = 90 + (5 * (1 - Math.exp(-overshoot / 240))); // 90 -> 95 asymptotically
+    }
+    return Math.min(95, Math.max(3, value));
   };
 
   const closeExportSuccessModal = () => {
@@ -103,38 +113,31 @@
 
   const updateProgress = () => {
     const elapsed = (Date.now() - startTs) / 1000;
-    const remaining = progress > 2 ? elapsed * ((100 - progress) / progress) : 150;
+    progress = Math.max(progress, calculateProgressByElapsed(elapsed));
     const isTop10Mode = !structureMode || structureMode.value === "top10";
     let status = isTop10Mode ? "Этап 1/4: получение top-10" : "Этап 1/4: подготовка списка сайтов";
-    if (progress >= 28) status = "Этап 2/4: скриншоты и текст";
-    if (progress >= 62) status = "Этап 3/4: блоки и выводы";
-    if (progress >= 85) status = "Этап 4/4: предложение структуры";
+    if (elapsed >= 120) status = "Этап 2/4: скриншоты и текст";
+    if (elapsed >= 300) status = "Этап 3/4: блоки и выводы";
+    if (elapsed >= 480) status = "Этап 4/4: предложение структуры";
 
     progressBar.style.width = `${progress}%`;
     progressPercent.textContent = `${Math.round(progress)}%`;
     progressStatus.textContent = `${status}…`;
-    if (lastEtaSeconds !== null && remaining > lastEtaSeconds + 1) etaBecameWorse = true;
-    lastEtaSeconds = remaining;
-    progressEta.textContent = etaBecameWorse
-      ? "Подожди ещё чутка по-братски, что-то туго идёт"
-      : `Примерное время до окончания: ${formatEta(remaining)}`;
+    progressEta.textContent = "Анализ занимает примерно 10 минут, прогресс-бар может зависнуть";
   };
 
   const startProgress = () => {
     progress = 3;
     startTs = Date.now();
-    lastEtaSeconds = null;
-    etaBecameWorse = false;
     progressIdle.classList.add("hidden");
     progressWrap.classList.remove("hidden");
     updateProgress();
     progressTimer = window.setInterval(() => {
-      if (progress < 92) progress += 1.1;
       updateProgress();
     }, 1000);
   };
 
-  const completeProgress = () => {
+  const completeProgress = (idleMessage) => {
     if (progressTimer) {
       clearInterval(progressTimer);
       progressTimer = null;
@@ -147,11 +150,11 @@
     window.setTimeout(() => {
       progressWrap.classList.add("hidden");
       progressIdle.classList.remove("hidden");
-      progressIdle.textContent = "Анализ структуры завершён.";
+      progressIdle.textContent = idleMessage || "Анализ структуры завершён.";
     }, 700);
   };
 
-  const failProgress = () => {
+  const failProgress = (idleMessage) => {
     if (progressTimer) {
       clearInterval(progressTimer);
       progressTimer = null;
@@ -161,7 +164,7 @@
     window.setTimeout(() => {
       progressWrap.classList.add("hidden");
       progressIdle.classList.remove("hidden");
-      progressIdle.textContent = "Анализ завершился с ошибкой.";
+      progressIdle.textContent = idleMessage || "Анализ завершился с ошибкой.";
     }, 700);
   };
 
@@ -514,22 +517,41 @@
   const buildLightOverviewMd = (payload) => {
     const urls = (payload.urls || []).map((item) => String(item.url || "").trim()).filter(Boolean);
     const urlList = urls.length > 0 ? urls : (payload.pages || []).map((p) => String(p.url || "").trim()).filter(Boolean);
-    const urlLines = urlList.length > 0
-      ? urlList.map((url, index) => `${index + 1}. ${url}`).join("\n")
+    const uniqueUrlList = Array.from(new Set(urlList));
+    const urlLines = uniqueUrlList.length > 0
+      ? uniqueUrlList.map((url, index) => `${index + 1}. ${url}`).join("\n")
       : "— список страниц не получен.";
 
     const rows = Array.isArray(payload.structures_rows) ? payload.structures_rows : [];
-    const explicitTypes = rows
-      .map((row) => String(row.page_type || "").trim().toLowerCase())
-      .filter(Boolean);
-    let serviceCount = explicitTypes.filter((t) => t === "service").length;
-    let articleCount = explicitTypes.filter((t) => t === "portal_article").length;
-    if (!explicitTypes.length && urlList.length) {
-      const inferred = urlList.map((url) => inferTypeFromUrl(url));
-      serviceCount = inferred.filter((t) => t === "сервисная").length;
-      articleCount = inferred.filter((t) => t === "контентная").length;
-    }
-    const unknownCount = Math.max(0, urlList.length - serviceCount - articleCount);
+    const fallbackUrls = Array.from(
+      new Set((payload.pages || []).map((page) => String(page.url || "").trim()).filter(Boolean))
+    );
+    const urlsForType = uniqueUrlList.length > 0 ? uniqueUrlList : fallbackUrls;
+    const allowedUrlSet = new Set(urlsForType);
+    const pageTypeByUrl = new Map();
+    (payload.pages || []).forEach((page) => {
+      const pageUrl = String(page.url || "").trim();
+      if (!pageUrl || !allowedUrlSet.has(pageUrl) || pageTypeByUrl.has(pageUrl)) return;
+      const pageType = String(page.page_type || "").trim().toLowerCase();
+      if (pageType) pageTypeByUrl.set(pageUrl, pageType);
+    });
+    rows.forEach((row) => {
+      const pageUrl = String(row.page_url || "").trim();
+      if (!pageUrl || !allowedUrlSet.has(pageUrl) || pageTypeByUrl.has(pageUrl)) return;
+      const pageType = String(row.page_type || "").trim().toLowerCase();
+      if (pageType) pageTypeByUrl.set(pageUrl, pageType);
+    });
+    urlsForType.forEach((url) => {
+      if (pageTypeByUrl.has(url)) return;
+      const inferred = inferTypeFromUrl(url);
+      if (inferred === "сервисная") pageTypeByUrl.set(url, "service");
+      else if (inferred === "контентная") pageTypeByUrl.set(url, "portal_article");
+      else pageTypeByUrl.set(url, "");
+    });
+    const typeValues = Array.from(pageTypeByUrl.values());
+    const serviceCount = typeValues.filter((t) => t === "service").length;
+    const articleCount = typeValues.filter((t) => t === "portal_article").length;
+    const unknownCount = Math.max(0, urlsForType.length - serviceCount - articleCount);
     const typeLines = [
       `- Сервисные: ${serviceCount}`,
       `- Контентные/портальные: ${articleCount}`,
@@ -538,16 +560,31 @@
 
     const proposedRows = Array.isArray(payload.sheet3_proposed_rows) ? payload.sheet3_proposed_rows : [];
     const blockLines = [];
+    const formatDisplay = (humanReadable, systemName) => {
+      const human = String(humanReadable || "").trim();
+      const system = String(systemName || "").trim();
+      if (human && system) {
+        const normHuman = human.replace(/[\s_-]+/g, " ").toLowerCase();
+        const normSystem = system.replace(/[\s_-]+/g, " ").toLowerCase();
+        if (normHuman === normSystem) return human;
+        return `${human} (${system})`;
+      }
+      return human || system || "";
+    };
+
     for (let i = 1; i < proposedRows.length; i += 1) {
       const row = proposedRows[i];
       if (!Array.isArray(row) || row.length < 1) continue;
-      const raw = String(row[0] || "").trim();
-      if (!raw) continue;
-      if (/не удалось выделить структуру/i.test(raw)) continue;
-      const block = humanizeBlockName(raw);
-      if (!block) continue;
-      if (blockLines.includes(block)) continue;
-      blockLines.push(block);
+      const rawHuman = String(row[0] || "").trim();
+      const rawSystem = row.length >= 3 ? String(row[1] || "").trim() : "";
+      const rawLegacy = row.length >= 2 && row.length < 3 ? String(row[0] || "").trim() : "";
+      const candidate = row.length >= 3
+        ? formatDisplay(rawHuman, rawSystem)
+        : humanizeBlockName(rawLegacy);
+      if (!candidate) continue;
+      if (/не удалось выделить структуру/i.test(candidate)) continue;
+      if (blockLines.includes(candidate)) continue;
+      blockLines.push(candidate);
       if (blockLines.length >= 14) break;
     }
     if (!blockLines.length) {
@@ -566,8 +603,6 @@
       : "1. Структура не извлечена автоматически.";
 
     return [
-      "## Коротко по выборке",
-      "",
       "Я проанализировал страницы:",
       urlLines,
       "",
@@ -589,7 +624,10 @@
     if (lightOverviewWrap && lightOverviewDoc && lightOverviewToc) {
       const isLight = String(payload.top10_variant || "").toLowerCase() === "light";
       if (isLight) {
-        const overview = buildLightOverviewMd(payload);
+        const overview = buildLightOverviewMd(payload).replace(
+          /^\s{0,3}#{1,2}\s*Коротко по выборке\s*$/gim,
+          "",
+        ).trim();
         lightOverviewWrap.classList.remove("hidden");
         renderDoc(prettifyTaxonomyText(overview), lightOverviewToc, lightOverviewDoc, "Коротко", "top10-light-overview");
       } else {
@@ -677,28 +715,56 @@
       fetchStatus.classList.remove("hidden");
     }
 
+    let timeoutId = 0;
     try {
       const formData = new FormData();
       formData.set("search_queries", queries);
       formData.set("region_id", region || "225");
       formData.set("top_n", "10");
-      const response = await fetch("/top10-urls", { method: "POST", body: formData });
-      const payload = await response.json();
-      renderErrors(payload.errors || []);
+      const controller = new AbortController();
+      timeoutId = window.setTimeout(() => controller.abort(), 125000);
+      const response = await fetch("/top10-urls", {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      timeoutId = 0;
+      const raw = await response.text();
+      let payload = {};
+      try {
+        payload = raw ? JSON.parse(raw) : {};
+      } catch (_parseErr) {
+        payload = {};
+      }
+      const responseErrors = Array.isArray(payload.errors) ? payload.errors : [];
+      if (!response.ok && responseErrors.length === 0) {
+        const compactRaw = String(raw || "").replace(/\s+/g, " ").trim();
+        responseErrors.push(`HTTP ${response.status}${compactRaw ? `: ${compactRaw.slice(0, 300)}` : ""}`);
+      }
+      renderErrors(responseErrors);
 
       if (payload.urls && payload.urls.length > 0) {
         urlsField.value = payload.urls.map((row) => row.url).join("\n");
         if (fetchStatus) fetchStatus.textContent = `Готово: найдено ${payload.urls.length} URL.`;
         scrollToUrlsList();
       } else if (fetchStatus) {
-        fetchStatus.textContent = payload.errors && payload.errors.length > 0
-          ? payload.errors[0]
+        fetchStatus.textContent = responseErrors.length > 0
+          ? responseErrors[0]
           : "Готово: URL не найдены по этим условиям.";
       }
     } catch (error) {
-      renderErrors([String(error)]);
-      if (fetchStatus) fetchStatus.textContent = "Ошибка при сборке top-10.";
+      const isAbort = error && (error.name === "AbortError" || String(error).includes("AbortError"));
+      const message = isAbort
+        ? "Превышено время ожидания ответа от KeySo. Попробуйте ещё раз."
+        : `Ошибка при сборке top-10: ${String(error)}`;
+      renderErrors([message]);
+      if (fetchStatus) fetchStatus.textContent = message;
     } finally {
+      // Защитная очистка таймера на случай исключения до обработки ответа.
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
       showBtn.disabled = false;
       buildBtn.disabled = false;
     }
@@ -848,8 +914,25 @@
       });
       const payload = await response.json();
       renderResult(payload);
-      if (!response.ok || (payload.errors && payload.errors.length > 0 && !payload.summary_report && !payload.normalized_blocks && !payload.structure_proposal)) {
-        failProgress();
+      const payloadErrors = Array.isArray(payload.errors)
+        ? payload.errors.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+      const hasSections = Boolean(payload.summary_report || payload.normalized_blocks || payload.structure_proposal);
+      const hasFatalError = !response.ok || (payloadErrors.length > 0 && !hasSections);
+      const hasWarnings = payloadErrors.length > 0
+        || payload.export_matrix_ready === false
+        || payload.export_structure_ready === false;
+
+      if (hasFatalError) {
+        const reason = payloadErrors[0]
+          || String(payload.export_matrix_reason || payload.export_structure_reason || "")
+          || "Анализ завершился с ошибкой.";
+        failProgress(`Ошибка: ${reason}`);
+      } else if (hasWarnings) {
+        const reason = payloadErrors[0]
+          || String(payload.export_matrix_reason || payload.export_structure_reason || "")
+          || "Анализ завершён с замечаниями.";
+        completeProgress(`Анализ завершён с замечаниями: ${reason}`);
       } else {
         completeProgress();
       }
@@ -863,7 +946,7 @@
         structure_proposal: "",
         errors: [String(error)],
       });
-      failProgress();
+      failProgress(`Ошибка: ${String(error)}`);
     } finally {
       showBtn.disabled = false;
       buildBtn.disabled = false;
@@ -926,8 +1009,14 @@
           || message.includes("structure_sheet")
         ) {
           renderErrors(["Экспорт невозможен: обновите Apps Script для формата top10.v3 (compare/sites/structure)."]);
+          if (progressIdle) {
+            progressIdle.textContent = "Ошибка выгрузки: Apps Script не поддерживает формат top10.v3.";
+          }
         } else {
           renderErrors([message || "Ошибка экспорта в Google Sheets."]);
+          if (progressIdle) {
+            progressIdle.textContent = `Ошибка выгрузки: ${message || "неизвестная причина"}`;
+          }
         }
         exportSheetsBtn.textContent = "Ошибка";
       } finally {

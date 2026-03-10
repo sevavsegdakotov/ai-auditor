@@ -16,6 +16,7 @@ class Settings:
     keyso_base_url: str = os.getenv("KEYSO_BASE_URL", "https://api.keys.so")
     keyso_timeout_seconds: int = int(os.getenv("KEYSO_TIMEOUT_SECONDS", "120"))
     keyso_project_ready_timeout_seconds: int = int(os.getenv("KEYSO_PROJECT_READY_TIMEOUT_SECONDS", "600"))
+    top10_urls_timeout_seconds: int = int(os.getenv("TOP10_URLS_TIMEOUT_SECONDS", "110"))
     keyso_verify_ssl: bool = os.getenv("KEYSO_VERIFY_SSL", "true").lower() == "true"
     google_sheets_webhook_url_site: str = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL_SITE", "")
     google_sheets_webhook_url_competitors: str = os.getenv("GOOGLE_SHEETS_WEBHOOK_URL_COMPETITORS", "")

@@ -186,7 +186,7 @@
             <div class="progress-track" aria-label="Прогресс анализа структуры по конкурентам">
               <div id="top10-progress-bar" class="progress-bar"></div>
             </div>
-            <p id="top10-progress-eta" class="muted">Примерное время до окончания: ~02:30</p>
+            <p id="top10-progress-eta" class="muted">Анализ занимает примерно 10 минут, прогресс-бар может зависнуть</p>
           </div>
           <div id="top10-progress-idle" class="empty-inline">Запустите анализ структуры по конкурентам.</div>
         </section>
@@ -264,6 +264,6 @@
 
   <script id="top10-prompts-defaults" type="application/json">{{ default_top10_prompts | tojson }}</script>
   <script src="/static/topbar-help.js?v={{ asset_version }}" defer></script>
-  <script src="/static/top10.js?v={{ asset_version }}" defer></script>
+  <script src="/static/top10.js?v={{ asset_version }}-0.1.2" defer></script>
 </body>
 </html>

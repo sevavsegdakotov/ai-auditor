@@ -1276,6 +1276,90 @@ def _looks_like_structures_rows(rows: list[dict]) -> bool:
     return required_hits >= max(1, len(probe) // 2)
 
 
+def _extract_structures_rows_from_plain_text(text: str) -> list[dict]:
+    """
+    Fallback parser for LLM outputs in plain text format:
+    <site-url>
+    1. <RU name> (<system_id>)
+    2. ...
+    """
+    if not text:
+        return []
+    lines = [str(line or "").strip() for line in text.replace("\r", "").split("\n")]
+    rows: list[dict] = []
+    current_site = ""
+    current_page_url = ""
+    auto_index = 0
+
+    site_re = re.compile(r"^https?://[^\s]+$", flags=re.IGNORECASE)
+    item_re = re.compile(r"^\s*(\d+)[\.\)]\s*(.+?)\s*$")
+
+    def split_label_id(raw: str) -> tuple[str, str]:
+        value = _normalize_ws(raw)
+        m = re.match(r"^(.*?)\s*\(([^()]+)\)\s*$", value)
+        if m:
+            left = _normalize_ws(m.group(1))
+            right = _normalize_ws(m.group(2))
+            if right:
+                return left or right, right
+        return value, ""
+
+    def _clean_line(value: str) -> str:
+        cleaned = str(value or "").strip()
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned.strip()
+        # Убираем обрамляющие кавычки и запятые из текстового fallback.
+        cleaned = re.sub(r'^[\"“”«»\']+', "", cleaned)
+        cleaned = re.sub(r'[\"“”«»\']+$', "", cleaned)
+        cleaned = cleaned.rstrip(",")
+        return cleaned.strip()
+
+    for raw_line in lines:
+        line = _clean_line(raw_line)
+        if not line:
+            continue
+        if site_re.match(line):
+            current_site = _canonical_site(line)
+            current_page_url = line.rstrip("/")
+            auto_index = 0
+            continue
+        if not current_site:
+            continue
+        m = item_re.match(line)
+        if not m:
+            continue
+        auto_index += 1
+        try:
+            block_index = int(m.group(1))
+        except Exception:  # noqa: BLE001
+            block_index = auto_index
+        raw_block = _clean_line(_normalize_ws(m.group(2)))
+        label_ru, system_id = split_label_id(raw_block)
+        block_name = label_ru or system_id or raw_block
+        l2_id = system_id or block_name
+        l2_label_ru = label_ru or block_name
+        if not l2_id or not current_page_url:
+            continue
+        rows.append(
+            {
+                "site": current_site,
+                "page_url": current_page_url,
+                "page_type": "",
+                "l1_id": "",
+                "l1_label_ru": "",
+                "l2_id": l2_id,
+                "l2_label_ru": l2_label_ru,
+                "l3_id": "",
+                "l3_label_ru": "",
+                "block_name": block_name,
+                "block_index": block_index,
+                "notes": "",
+                "confidence": 0.55,
+            }
+        )
+    return rows
+
+
 def _extract_marked_sheet_text(raw: str, marker: str) -> str:
     text = (raw or "").replace("\r", "")
     lines = text.split("\n")
@@ -1364,6 +1448,10 @@ def _extract_competitor_structures_rows(normalized_blocks_text: str) -> tuple[li
         if candidate and _looks_like_structures_rows(candidate):
             rows = candidate
             source = "raw_json_array_scan"
+    if not rows:
+        candidate_rows = _extract_structures_rows_from_plain_text(normalized_blocks_text)
+        if candidate_rows:
+            return candidate_rows, "plain_text_scan"
 
     prepared: list[dict] = []
     for row in rows:
@@ -1489,21 +1577,59 @@ def _validate_sheet3_proposed_rows(rows: object) -> tuple[bool, str]:
     header = rows[0]
     if not isinstance(header, list) or len(header) < 2:
         return False, "Лист предложенной структуры: некорректный header."
-    if str(header[0]).strip() != "Блок" or str(header[1]).strip() != "Комментарии по блоку":
-        return False, "Лист предложенной структуры: header должен быть «Блок | Комментарии по блоку»."
+    h0 = str(header[0]).strip()
+    h1 = str(header[1]).strip()
+    if h0 == "Блок" and h1 == "Комментарии по блоку":
+        min_width = 2
+    elif (
+        h0 == "Блок (человекочитаемый)"
+        and h1 == "Блок (системный)"
+        and len(header) >= 3
+        and str(header[2]).strip() == "Комментарии по блоку"
+    ):
+        min_width = 3
+    else:
+        return False, (
+            "Лист предложенной структуры: header должен быть "
+            "«Блок | Комментарии по блоку» (старый) или "
+            "«Блок (человекочитаемый) | Блок (системный) | Комментарии по блоку» (новый)."
+        )
     for i, row in enumerate(rows[1:], start=2):
-        if not isinstance(row, list) or len(row) < 2:
+        if not isinstance(row, list) or len(row) < min_width:
             return False, f"Лист предложенной структуры: строка {i} имеет неверный формат."
     return True, ""
+
+
+def _payload_pages_as_artifacts(report_payload: dict) -> list[dict]:
+    artifacts: list[dict] = []
+    pages = report_payload.get("pages")
+    if isinstance(pages, list):
+        for item in pages:
+            if isinstance(item, dict):
+                url = str(item.get("url") or item.get("page_url") or "").strip()
+                if url:
+                    artifacts.append({"url": url})
+    if artifacts:
+        return artifacts
+    urls = report_payload.get("urls")
+    if isinstance(urls, list):
+        for item in urls:
+            if isinstance(item, dict):
+                url = str(item.get("url") or "").strip()
+            else:
+                url = str(item or "").strip()
+            if url:
+                artifacts.append({"url": url})
+    return artifacts
 
 
 def _build_top10_proposed_structure_rows(
     table_structure_output: str,
     structure_proposal_fallback: str,
 ) -> tuple[list[list[str]], bool, str]:
-    header = ["Блок", "Комментарии по блоку"]
+    header = ["Блок (человекочитаемый)", "Блок (системный)", "Комментарии по блоку"]
     source_text = str(table_structure_output or "").strip() or str(structure_proposal_fallback or "").strip()
-    fallback_rows = [header, ["Не удалось выделить структуру автоматически", "Недостаточно структурированных строк в ответе модели."]]
+    fallback_rows = [header, ["Не удалось выделить структуру автоматически", "", "Недостаточно структурированных строк в ответе модели."]]
     if not source_text:
         return fallback_rows, False, "Пустой текст предложенной структуры."
 
@@ -1552,7 +1678,7 @@ def _build_top10_proposed_structure_rows(
             return True
         return text in {"", "--", "контроль cta — рекомендуемые 3–5 точек", "контроль cta - рекомендуемые 3-5 точек"}
 
-    pending_block: str | None = None
+    pending_block: tuple[str, str] | None = None
     collected = 0
     last_data_row_idx: int | None = None
 
@@ -1562,11 +1688,55 @@ def _build_top10_proposed_structure_rows(
             return False
         if not extra_text:
             return False
-        current_comment = _normalize_ws(parsed_rows[last_data_row_idx][1])
-        parsed_rows[last_data_row_idx][1] = (
+        current_comment = _normalize_ws(parsed_rows[last_data_row_idx][2])
+        parsed_rows[last_data_row_idx][2] = (
             f"{current_comment} {extra_text}".strip() if current_comment else extra_text
         )
         return True
+
+    def _humanize_system_id(value: str) -> str:
+        text = _normalize_ws(value)
+        if not text:
+            return ""
+        pretty = text.replace("_", " ").replace("-", " ").replace("/", " / ")
+        pretty = re.sub(r"\s+", " ", pretty).strip()
+        if not pretty:
+            return text
+        return pretty[:1].upper() + pretty[1:]
+
+    def _is_system_like(value: str) -> bool:
+        text = _normalize_ws(value)
+        if not text:
+            return False
+        if re.search(r"[А-Яа-яЁё]", text):
+            return False
+        return bool(re.fullmatch(r"[a-z0-9_/\-,.\s]+", text, flags=re.IGNORECASE))
+
+    def _split_block_human_system(value: str) -> tuple[str, str]:
+        text = _normalize_ws(value)
+        if not text:
+            return "", ""
+        m = re.match(r"^(.*?)\s*\(([^()]+)\)\s*$", text)
+        if m:
+            left = _normalize_ws(m.group(1))
+            right = _normalize_ws(m.group(2))
+            left_ru = bool(re.search(r"[А-Яа-яЁё]", left))
+            right_ru = bool(re.search(r"[А-Яа-яЁё]", right))
+            if left_ru and not right_ru:
+                return left, right
+            if right_ru and not left_ru:
+                return right, left
+            if _is_system_like(left) and not _is_system_like(right):
+                return right, left
+            if _is_system_like(right):
+                return left or _humanize_system_id(right), right
+            if _is_system_like(left):
+                return right or _humanize_system_id(left), left
+            return left, right
+
+        if _is_system_like(text):
+            return _humanize_system_id(text), text
+        return text, ""
 
     for raw in source_text.replace("\r", "").split("\n"):
         line = _clean_line(raw)
@@ -1600,13 +1770,13 @@ def _build_top10_proposed_structure_rows(
         if pending_block:
             comment_candidate = _normalize_ws(line.lstrip("—-").strip())
             if comment_candidate and not _looks_like_block_name(comment_candidate):
-                parsed_rows.append([pending_block, comment_candidate])
+                parsed_rows.append([pending_block[0], pending_block[1], comment_candidate])
                 collected += 1
                 last_data_row_idx = len(parsed_rows) - 1
                 pending_block = None
                 continue
             # Если вместо комментария сразу пошёл новый блок, запишем предыдущий пустым и продолжим.
-            parsed_rows.append([pending_block, ""])
+            parsed_rows.append([pending_block[0], pending_block[1], ""])
             collected += 1
             last_data_row_idx = len(parsed_rows) - 1
             pending_block = None
@@ -1618,7 +1788,8 @@ def _build_top10_proposed_structure_rows(
                 block = _normalize_ws(parts[0])
                 comment = _normalize_ws(" — ".join(parts[1:]))
                 if _looks_like_block_name(block):
-                    parsed_rows.append([block, comment])
+                    human, system = _split_block_human_system(block)
+                    parsed_rows.append([human or block, system, comment])
                     collected += 1
                     last_data_row_idx = len(parsed_rows) - 1
                     continue
@@ -1634,17 +1805,18 @@ def _build_top10_proposed_structure_rows(
                     block, comment = left, right
                     break
         if comment:
-            parsed_rows.append([_normalize_ws(block), _normalize_ws(comment)])
+            human, system = _split_block_human_system(_normalize_ws(block))
+            parsed_rows.append([human or _normalize_ws(block), system, _normalize_ws(comment)])
             collected += 1
             last_data_row_idx = len(parsed_rows) - 1
             continue
 
         if _looks_like_block_name(block):
-            pending_block = _normalize_ws(block)
+            pending_block = _split_block_human_system(_normalize_ws(block))
             continue
 
     if pending_block:
-        parsed_rows.append([pending_block, ""])
+        parsed_rows.append([pending_block[0], pending_block[1], ""])
         collected += 1
         last_data_row_idx = len(parsed_rows) - 1
 
@@ -1652,7 +1824,7 @@ def _build_top10_proposed_structure_rows(
         compact = _normalize_ws(source_text)
         if len(compact) > 500:
             compact = f"{compact[:500]}..."
-        return [header, ["Не удалось выделить структуру автоматически", compact]], False, "Не удалось извлечь структурированные пары блок/комментарий."
+        return [header, ["Не удалось выделить структуру автоматически", "", compact]], False, "Не удалось извлечь структурированные пары блок/комментарий."
 
     return parsed_rows, True, ""
 
@@ -1831,10 +2003,24 @@ async def top10_urls(
         normalized_region = 225
     try:
         client = KeysoClient()
-        top_rows = await asyncio.to_thread(client.get_top_urls, queries, normalized_region, max(1, min(top_n, 10)))
+        top_rows = await asyncio.wait_for(
+            asyncio.to_thread(client.get_top_urls, queries, normalized_region, max(1, min(top_n, 10))),
+            timeout=max(30, settings.top10_urls_timeout_seconds),
+        )
         result["urls"] = [{"url": row.url, "count": row.count} for row in top_rows]
         if result["urls"]:
             _save_top10_cache(queries, normalized_region, result["urls"])
+    except TimeoutError:
+        cached = _load_top10_cache(queries, normalized_region)
+        if cached:
+            result["urls"] = cached[: max(1, min(top_n, 10))]
+            result["errors"].append(
+                "KeySo отвечает слишком долго. Использован кэш последней успешной выборки."
+            )
+        else:
+            result["errors"].append(
+                "KeySo отвечает слишком долго. Попробуйте ещё раз через 1-2 минуты."
+            )
     except Exception as exc:  # noqa: BLE001
         cached = _load_top10_cache(queries, normalized_region)
         if cached:
@@ -2094,6 +2280,8 @@ async def analyze_competitors(
             result["export_matrix_ready"] = True
             if result["structures_rows_source"] in {"service_data_json_block", "fenced_json_block", "raw_json_array_scan"}:
                 result["export_matrix_reason"] = "Восстановлен structures_rows из JSON-блока без маркера."
+            elif result["structures_rows_source"] == "plain_text_scan":
+                result["export_matrix_reason"] = "Восстановлен structures_rows из текстового списка блоков."
             else:
                 result["export_matrix_reason"] = ""
         else:
@@ -2385,6 +2573,8 @@ async def analyze_top10_structure(
             result["export_matrix_ready"] = True
             if result["structures_rows_source"] in {"service_data_json_block", "fenced_json_block", "raw_json_array_scan"}:
                 result["export_matrix_reason"] = "Восстановлен structures_rows из JSON-блока без маркера."
+            elif result["structures_rows_source"] == "plain_text_scan":
+                result["export_matrix_reason"] = "Восстановлен structures_rows из текстового списка блоков."
             else:
                 result["export_matrix_reason"] = ""
         else:
@@ -2644,6 +2834,61 @@ async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
         matrix_ok, matrix_reason = _validate_sheet1_matrix_rows(matrix_rows)
         sites_ok, sites_reason = _validate_sheet2_site_columns_rows(site_columns_rows)
         structure_ok, structure_reason = _validate_sheet3_proposed_rows(proposed_rows)
+
+        # Автовосстановление матрицы/колонок сайтов из structures_rows или текстового блока.
+        if not (matrix_ok and sites_ok):
+            raw_rows = report_payload.get("structures_rows")
+            structures_rows: list[dict] = []
+            if isinstance(raw_rows, list):
+                structures_rows = [row for row in raw_rows if isinstance(row, dict)]
+            restore_source = ""
+            if not structures_rows:
+                parse_text_candidates = [
+                    str(report_payload.get("normalized_blocks") or "").strip(),
+                    table_blocks,
+                ]
+                for candidate in parse_text_candidates:
+                    if not candidate:
+                        continue
+                    parsed_rows, rows_source = _extract_competitor_structures_rows(candidate)
+                    if parsed_rows:
+                        structures_rows = parsed_rows
+                        restore_source = rows_source
+                        break
+            if structures_rows:
+                artifacts = _payload_pages_as_artifacts(report_payload)
+                _, _, rebuilt_matrix_rows, rebuilt_site_columns_rows = _build_competitors_compare_and_site_text(
+                    structures_rows,
+                    artifacts,
+                )
+                rebuilt_matrix_ok, rebuilt_matrix_reason = _validate_sheet1_matrix_rows(rebuilt_matrix_rows)
+                rebuilt_sites_ok, rebuilt_sites_reason = _validate_sheet2_site_columns_rows(rebuilt_site_columns_rows)
+                if rebuilt_matrix_ok and rebuilt_sites_ok:
+                    matrix_rows = rebuilt_matrix_rows
+                    site_columns_rows = rebuilt_site_columns_rows
+                    report_payload["sheet1_matrix_rows"] = matrix_rows
+                    report_payload["sheet2_site_columns_rows"] = site_columns_rows
+                    report_payload["export_matrix_ready"] = True
+                    reason_parts = []
+                    if report_payload["export_matrix_reason"]:
+                        reason_parts.append(str(report_payload["export_matrix_reason"]))
+                    if restore_source:
+                        reason_parts.append(
+                            "Матрица восстановлена автоматически из структурного текста."
+                            if restore_source == "plain_text_scan"
+                            else "Матрица восстановлена автоматически из JSON/текста."
+                        )
+                    report_payload["export_matrix_reason"] = " ".join(part for part in reason_parts if part).strip()
+                    matrix_ok, matrix_reason = True, ""
+                    sites_ok, sites_reason = True, ""
+                else:
+                    details = " ".join(part for part in [rebuilt_matrix_reason, rebuilt_sites_reason] if part).strip()
+                    report_payload["export_matrix_reason"] = (
+                        f"{report_payload['export_matrix_reason']} {details}".strip()
+                        if report_payload["export_matrix_reason"]
+                        else details
+                    )
+
         if not (matrix_ok and sites_ok):
             report_payload["export_matrix_ready"] = False
             details = " ".join(part for part in [matrix_reason, sites_reason] if part).strip()
@@ -2661,7 +2906,10 @@ async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
                 if report_payload["export_structure_reason"]
                 else structure_reason or "Валидация листа предложенной структуры не пройдена."
             )
-            report_payload["sheet3_proposed_rows"] = [["Блок", "Комментарии по блоку"], ["Не удалось выделить структуру автоматически", str(table_proposed or table_structure or table_blocks or "")[:500]]]
+            report_payload["sheet3_proposed_rows"] = [
+                ["Блок (человекочитаемый)", "Блок (системный)", "Комментарии по блоку"],
+                ["Не удалось выделить структуру автоматически", "", str(table_proposed or table_structure or table_blocks or "")[:500]],
+            ]
 
         report_payload["export_schema_version"] = "top10.v3.triple"
         if table_blocks:
