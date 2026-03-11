@@ -1607,9 +1607,54 @@ def _validate_sheet3_proposed_rows(rows: object) -> tuple[bool, str]:
             "«Блок | Комментарии по блоку» (старый) или "
             "«Блок (человекочитаемый) | Блок (системный) | Комментарии по блоку» (новый)."
         )
+    id_like_re = re.compile(r"^[a-z0-9][a-z0-9_/-]{2,}$")
+    banned_human_prefixes = (
+        "детализация по шагам",
+        "коротко",
+        "h1",
+        "цель",
+        "почему",
+        "что внутри",
+        "cta",
+        "proof_type",
+        "конверсионный инструмент",
+        "снимает тревогу",
+        "закрывает вопрос",
+    )
+    total_data_rows = 0
+    rows_with_system_id = 0
     for i, row in enumerate(rows[1:], start=2):
         if not isinstance(row, list) or len(row) < min_width:
             return False, f"Лист предложенной структуры: строка {i} имеет неверный формат."
+        total_data_rows += 1
+        if min_width >= 3:
+            human = _normalize_ws(str(row[0] if len(row) > 0 else ""))
+            system_id = _normalize_ws(str(row[1] if len(row) > 1 else ""))
+            comment = _normalize_ws(str(row[2] if len(row) > 2 else ""))
+
+            if human.lower().startswith(banned_human_prefixes):
+                return False, (
+                    f"Лист предложенной структуры: строка {i} выглядит как обоснование, "
+                    "а не как название блока."
+                )
+            if system_id:
+                if not id_like_re.match(system_id):
+                    return False, f"Лист предложенной структуры: строка {i} содержит некорректный system_id."
+                rows_with_system_id += 1
+            if comment.lower().startswith(("**цель", "цель")) and not system_id:
+                return False, (
+                    f"Лист предложенной структуры: строка {i} похожа на секцию детализации, "
+                    "а не на блок маршрута."
+                )
+
+    if min_width >= 3:
+        if total_data_rows < 6:
+            return False, "Лист предложенной структуры: недостаточно блоков (минимум 6)."
+        if rows_with_system_id < int(total_data_rows * 0.7):
+            return False, (
+                "Лист предложенной структуры: слишком мало валидных системных id "
+                f"({rows_with_system_id}/{total_data_rows})."
+            )
     return True, ""
 
 
