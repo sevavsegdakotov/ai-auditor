@@ -588,6 +588,7 @@
     const proposedRows = Array.isArray(payload.sheet3_proposed_rows) ? payload.sheet3_proposed_rows : [];
     const structureReady = payload.export_structure_ready !== false;
     const blockLines = [];
+    const seenSystemIds = new Set();
     const formatDisplay = (humanReadable, systemName) => {
       const human = String(humanReadable || "").trim();
       const system = String(systemName || "").trim();
@@ -607,6 +608,11 @@
         const rawHuman = String(row[0] || "").trim();
         const rawSystem = row.length >= 3 ? String(row[1] || "").trim() : "";
         const rawLegacy = row.length >= 2 && row.length < 3 ? String(row[0] || "").trim() : "";
+        const systemKey = rawSystem.toLowerCase();
+        if (systemKey) {
+          if (seenSystemIds.has(systemKey)) continue;
+          seenSystemIds.add(systemKey);
+        }
         const candidate = row.length >= 3
           ? formatDisplay(rawHuman, rawSystem)
           : humanizeBlockName(rawLegacy);

@@ -1623,6 +1623,7 @@ def _validate_sheet3_proposed_rows(rows: object) -> tuple[bool, str]:
     )
     total_data_rows = 0
     rows_with_system_id = 0
+    seen_system_ids: set[str] = set()
     for i, row in enumerate(rows[1:], start=2):
         if not isinstance(row, list) or len(row) < min_width:
             return False, f"Лист предложенной структуры: строка {i} имеет неверный формат."
@@ -1640,6 +1641,10 @@ def _validate_sheet3_proposed_rows(rows: object) -> tuple[bool, str]:
             if system_id:
                 if not id_like_re.match(system_id):
                     return False, f"Лист предложенной структуры: строка {i} содержит некорректный system_id."
+                system_key = system_id.lower()
+                if system_key in seen_system_ids:
+                    return False, f"Лист предложенной структуры: дублируется system_id '{system_id}' в строке {i}."
+                seen_system_ids.add(system_key)
                 rows_with_system_id += 1
             if comment.lower().startswith(("**цель", "цель")) and not system_id:
                 return False, (
@@ -1710,6 +1715,7 @@ def _build_top10_proposed_structure_rows(
         "rows_total": 0,
         "rows_with_system_id": 0,
         "dropped_as_reason_lines": 0,
+        "dropped_as_duplicate_system_id": 0,
         "parse_mode": "empty",
     }
     parse_examples = {"accepted": [], "dropped": []}
@@ -1786,11 +1792,20 @@ def _build_top10_proposed_structure_rows(
 
     def _phase_candidates(phase: str) -> list[tuple[int, str, str, str]]:
         candidates: list[tuple[int, str, str, str]] = []
+        stop_markers = (
+            "контроль cta",
+            "контроль cta:",
+            "по каждому шагу",
+            "детализация",
+            "чек-лист рисков",
+        )
         for idx, raw in enumerate(lines):
             line = _strip_markup(raw)
             if not line:
                 continue
             lower = line.lower()
+            if any(marker in lower for marker in stop_markers):
+                break
             if lower.startswith(("https://", "http://")):
                 continue
             if line.startswith("```"):
@@ -1840,9 +1855,25 @@ def _build_top10_proposed_structure_rows(
     # Recompute comments with next block boundary.
     chosen.sort(key=lambda item: item[0])
     rebuilt: list[list[str]] = [header]
+    seen_system_ids: set[str] = set()
     for i, (idx, human, system, inline_comment) in enumerate(chosen):
         next_idx = chosen[i + 1][0] if i + 1 < len(chosen) else None
         comment = inline_comment or _collect_comment(idx, next_idx)
+        canonical_system = _normalize_ws(system).lower()
+        if canonical_system in seen_system_ids:
+            parse_stats["dropped_as_duplicate_system_id"] += 1
+            # Merge useful details into the first occurrence, but do not duplicate rows.
+            for row in rebuilt[1:]:
+                if _normalize_ws(row[1]).lower() == canonical_system:
+                    existing_comment = _normalize_ws(row[2] if len(row) > 2 else "")
+                    incoming_comment = _normalize_ws(comment)
+                    if incoming_comment and (
+                        not existing_comment or (len(incoming_comment) > len(existing_comment) and incoming_comment not in existing_comment)
+                    ):
+                        row[2] = incoming_comment
+                    break
+            continue
+        seen_system_ids.add(canonical_system)
         rebuilt.append([human, system, comment])
         if len(parse_examples["accepted"]) < 3:
             parse_examples["accepted"].append(f"{human} ({system})")
@@ -2996,4 +3027,10 @@ async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
                 )
         return JSONResponse(content=result)
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse(content={"errors": [str(exc)]}, status_code=400)
+        message = str(exc)
+        if "UNAUTHORIZED" in message.upper():
+            message = (
+                "Apps Script ожидает токен, но в проде токен отключён. "
+                "Обновите скрипт с TOKEN=''."
+            )
+        return JSONResponse(content={"errors": [message]}, status_code=400)
