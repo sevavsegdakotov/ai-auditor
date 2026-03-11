@@ -1721,13 +1721,16 @@ def _build_top10_proposed_structure_rows(
             if candidate.lower().startswith(("по каждому шагу", "контроль cta", "чек-лист рисков")):
                 break
             if _is_reason_line(candidate):
-                preferred = re.sub(
+                cleaned = re.sub(
                     r"^(почему|зачем|обоснование|цель)\s*[:\-—]?\s*",
                     "",
                     candidate,
                     flags=re.IGNORECASE,
                 ).strip()
-                break
+                if cleaned and cleaned.lower() not in {"(1 строка)", "1 строка", "кратко"}:
+                    preferred = cleaned
+                    break
+                continue
             if not fallback and not re.search(r"\([a-z0-9_/\-]{3,}\)\s*$", candidate, flags=re.IGNORECASE):
                 fallback = candidate
         comment = preferred or fallback
@@ -1754,6 +1757,14 @@ def _build_top10_proposed_structure_rows(
                 continue
             numbered = re.match(r"^\d+[.)]\s+(.+)$", line)
             target = numbered.group(1) if numbered else line
+            inline_comment = ""
+            split_match = re.match(r"^(.+?)\s*[—–-]\s+(.+)$", target)
+            if split_match:
+                left = _strip_markup(split_match.group(1))
+                right = _strip_markup(split_match.group(2))
+                if left and right:
+                    target = left
+                    inline_comment = right
             extracted = _extract_human_system(target)
             if not extracted:
                 if phase == "phase_b":
@@ -1771,7 +1782,7 @@ def _build_top10_proposed_structure_rows(
                 continue
             if phase == "phase_a" and not numbered:
                 continue
-            comment = _collect_comment(idx, None)
+            comment = inline_comment or _collect_comment(idx, None)
             candidates.append((idx, human, system, comment))
         return candidates
 
@@ -1784,9 +1795,9 @@ def _build_top10_proposed_structure_rows(
     # Recompute comments with next block boundary.
     chosen.sort(key=lambda item: item[0])
     rebuilt: list[list[str]] = [header]
-    for i, (idx, human, system, _comment) in enumerate(chosen):
+    for i, (idx, human, system, inline_comment) in enumerate(chosen):
         next_idx = chosen[i + 1][0] if i + 1 < len(chosen) else None
-        comment = _collect_comment(idx, next_idx)
+        comment = inline_comment or _collect_comment(idx, next_idx)
         rebuilt.append([human, system, comment])
         if len(parse_examples["accepted"]) < 3:
             parse_examples["accepted"].append(f"{human} ({system})")
