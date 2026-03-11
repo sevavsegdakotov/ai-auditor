@@ -1600,6 +1600,24 @@ def _validate_sheet3_proposed_rows(rows: object) -> tuple[bool, str]:
     return True, ""
 
 
+def _validate_top10_export_bundle(bundle: object) -> tuple[bool, str]:
+    if not isinstance(bundle, dict):
+        return False, "export_bundle отсутствует или имеет неверный формат."
+    matrix_rows = bundle.get("sheet1_matrix_rows")
+    site_rows = bundle.get("sheet2_site_columns_rows")
+    proposed_rows = bundle.get("sheet3_proposed_rows")
+    matrix_ok, matrix_reason = _validate_sheet1_matrix_rows(matrix_rows)
+    sites_ok, sites_reason = _validate_sheet2_site_columns_rows(site_rows)
+    structure_ok, structure_reason = _validate_sheet3_proposed_rows(proposed_rows)
+    if not matrix_ok:
+        return False, matrix_reason
+    if not sites_ok:
+        return False, sites_reason
+    if not structure_ok:
+        return False, structure_reason
+    return True, ""
+
+
 def _payload_pages_as_artifacts(report_payload: dict) -> list[dict]:
     artifacts: list[dict] = []
     pages = report_payload.get("pages")
@@ -2394,10 +2412,13 @@ async def analyze_top10_structure(
         "sheet1_matrix_rows": [],
         "sheet2_site_columns_rows": [],
         "sheet3_proposed_rows": [],
+        "export_bundle": {},
+        "export_schema_version": "top10.v4.strict",
         "export_matrix_ready": False,
         "export_matrix_reason": "Матрица ещё не сформирована.",
         "export_structure_ready": False,
         "export_structure_reason": "Лист предложенной структуры ещё не сформирован.",
+        "export_stage_status": {"ok": False, "error": "", "state": "analysis_pending"},
         "export_table_raw": "",
         "table_blocks_output": "",
         "table_structure_output": "",
@@ -2615,6 +2636,42 @@ async def analyze_top10_structure(
         result["export_structure_ready"] = structure_ready
         result["export_structure_reason"] = structure_reason
 
+        export_bundle = {
+            "sheet1_matrix_rows": result["sheet1_matrix_rows"],
+            "sheet2_site_columns_rows": result["sheet2_site_columns_rows"],
+            "sheet3_proposed_rows": result["sheet3_proposed_rows"],
+            "schema_version": "top10.v4.strict",
+            "export_ready": bool(result["export_matrix_ready"] and result["export_structure_ready"]),
+            "export_reason": (
+                " ".join(
+                    part for part in [
+                        str(result.get("export_matrix_reason") or "").strip(),
+                        str(result.get("export_structure_reason") or "").strip(),
+                    ] if part
+                ).strip()
+            ),
+        }
+        bundle_ok, bundle_reason = _validate_top10_export_bundle(export_bundle)
+        if not bundle_ok:
+            result["export_matrix_ready"] = False
+            result["export_structure_ready"] = False
+            result["export_matrix_reason"] = bundle_reason
+            result["export_structure_reason"] = bundle_reason
+            export_bundle["export_ready"] = False
+            export_bundle["export_reason"] = bundle_reason
+            result["export_stage_status"] = {
+                "ok": False,
+                "error": bundle_reason,
+                "state": "analysis_export_bundle_failed",
+            }
+        else:
+            result["export_stage_status"] = {
+                "ok": True,
+                "error": "",
+                "state": "analysis_export_bundle_ready",
+            }
+        result["export_bundle"] = export_bundle
+
         (DATA_DIR / f"top10_report_{run_id}.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -2623,6 +2680,11 @@ async def analyze_top10_structure(
         result["export_matrix_ready"] = False
         if not result.get("export_matrix_reason"):
             result["export_matrix_reason"] = "Ошибка на этапе подготовки структурированных листов."
+        result["export_stage_status"] = {
+            "ok": False,
+            "error": str(exc),
+            "state": "analysis_exception",
+        }
         result["errors"].append(str(exc))
 
     return JSONResponse(content=result)
@@ -2809,113 +2871,40 @@ async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
             status_code=400,
         )
     if report_type == "top10":
-        # Для таблицы используем отдельные, строго нормализованные представления, если они есть.
-        table_blocks = str(report_payload.get("table_blocks_output", "") or "").strip()
-        table_structure = str(report_payload.get("table_structure_output", "") or "").strip()
-        table_proposed = str(
-            report_payload.get("table_proposed_output", "")
-            or report_payload.get("structure_proposal", "")
-            or ""
-        ).strip()
-        matrix_rows = report_payload.get("sheet1_matrix_rows") or []
-        site_columns_rows = report_payload.get("sheet2_site_columns_rows") or []
-        proposed_rows = report_payload.get("sheet3_proposed_rows") or []
-        if isinstance(matrix_rows, list):
-            report_payload["sheet1_matrix_rows"] = matrix_rows
-        if isinstance(site_columns_rows, list):
-            report_payload["sheet2_site_columns_rows"] = site_columns_rows
-        if isinstance(proposed_rows, list):
-            report_payload["sheet3_proposed_rows"] = proposed_rows
-        report_payload["export_matrix_ready"] = bool(report_payload.get("export_matrix_ready"))
-        report_payload["export_matrix_reason"] = str(report_payload.get("export_matrix_reason") or "")
-        report_payload["export_structure_ready"] = bool(report_payload.get("export_structure_ready"))
-        report_payload["export_structure_reason"] = str(report_payload.get("export_structure_reason") or "")
+        bundle = report_payload.get("export_bundle")
+        if not isinstance(bundle, dict):
+            bundle = {
+                "sheet1_matrix_rows": report_payload.get("sheet1_matrix_rows") or [],
+                "sheet2_site_columns_rows": report_payload.get("sheet2_site_columns_rows") or [],
+                "sheet3_proposed_rows": report_payload.get("sheet3_proposed_rows") or [],
+                "schema_version": str(report_payload.get("export_schema_version") or "top10.v4.strict"),
+                "export_ready": bool(report_payload.get("export_matrix_ready") and report_payload.get("export_structure_ready")),
+                "export_reason": (
+                    str(report_payload.get("export_matrix_reason") or "")
+                    or str(report_payload.get("export_structure_reason") or "")
+                ),
+            }
+        report_payload["export_bundle"] = bundle
+        report_payload["export_schema_version"] = "top10.v4.strict"
 
-        matrix_ok, matrix_reason = _validate_sheet1_matrix_rows(matrix_rows)
-        sites_ok, sites_reason = _validate_sheet2_site_columns_rows(site_columns_rows)
-        structure_ok, structure_reason = _validate_sheet3_proposed_rows(proposed_rows)
-
-        # Автовосстановление матрицы/колонок сайтов из structures_rows или текстового блока.
-        if not (matrix_ok and sites_ok):
-            raw_rows = report_payload.get("structures_rows")
-            structures_rows: list[dict] = []
-            if isinstance(raw_rows, list):
-                structures_rows = [row for row in raw_rows if isinstance(row, dict)]
-            restore_source = ""
-            if not structures_rows:
-                parse_text_candidates = [
-                    str(report_payload.get("normalized_blocks") or "").strip(),
-                    table_blocks,
-                ]
-                for candidate in parse_text_candidates:
-                    if not candidate:
-                        continue
-                    parsed_rows, rows_source = _extract_competitor_structures_rows(candidate)
-                    if parsed_rows:
-                        structures_rows = parsed_rows
-                        restore_source = rows_source
-                        break
-            if structures_rows:
-                artifacts = _payload_pages_as_artifacts(report_payload)
-                _, _, rebuilt_matrix_rows, rebuilt_site_columns_rows = _build_competitors_compare_and_site_text(
-                    structures_rows,
-                    artifacts,
-                )
-                rebuilt_matrix_ok, rebuilt_matrix_reason = _validate_sheet1_matrix_rows(rebuilt_matrix_rows)
-                rebuilt_sites_ok, rebuilt_sites_reason = _validate_sheet2_site_columns_rows(rebuilt_site_columns_rows)
-                if rebuilt_matrix_ok and rebuilt_sites_ok:
-                    matrix_rows = rebuilt_matrix_rows
-                    site_columns_rows = rebuilt_site_columns_rows
-                    report_payload["sheet1_matrix_rows"] = matrix_rows
-                    report_payload["sheet2_site_columns_rows"] = site_columns_rows
-                    report_payload["export_matrix_ready"] = True
-                    reason_parts = []
-                    if report_payload["export_matrix_reason"]:
-                        reason_parts.append(str(report_payload["export_matrix_reason"]))
-                    if restore_source:
-                        reason_parts.append(
-                            "Матрица восстановлена автоматически из структурного текста."
-                            if restore_source == "plain_text_scan"
-                            else "Матрица восстановлена автоматически из JSON/текста."
-                        )
-                    report_payload["export_matrix_reason"] = " ".join(part for part in reason_parts if part).strip()
-                    matrix_ok, matrix_reason = True, ""
-                    sites_ok, sites_reason = True, ""
-                else:
-                    details = " ".join(part for part in [rebuilt_matrix_reason, rebuilt_sites_reason] if part).strip()
-                    report_payload["export_matrix_reason"] = (
-                        f"{report_payload['export_matrix_reason']} {details}".strip()
-                        if report_payload["export_matrix_reason"]
-                        else details
-                    )
-
-        if not (matrix_ok and sites_ok):
-            report_payload["export_matrix_ready"] = False
-            details = " ".join(part for part in [matrix_reason, sites_reason] if part).strip()
-            report_payload["export_matrix_reason"] = (
-                f"{report_payload['export_matrix_reason']} {details}".strip()
-                if report_payload["export_matrix_reason"]
-                else details or "Валидация матрицы не пройдена. Выгружен текстовый fallback."
+        bundle_ok, bundle_reason = _validate_top10_export_bundle(bundle)
+        if not bundle_ok:
+            return JSONResponse(
+                content={"errors": [f"Экспорт top10.v4 strict отклонён: {bundle_reason}"]},
+                status_code=400,
             )
-            report_payload["sheet1_matrix_rows"] = []
-            report_payload["sheet2_site_columns_rows"] = []
-        if not structure_ok:
-            report_payload["export_structure_ready"] = False
-            report_payload["export_structure_reason"] = (
-                f"{report_payload['export_structure_reason']} {structure_reason}".strip()
-                if report_payload["export_structure_reason"]
-                else structure_reason or "Валидация листа предложенной структуры не пройдена."
-            )
-            report_payload["sheet3_proposed_rows"] = [
-                ["Блок (человекочитаемый)", "Блок (системный)", "Комментарии по блоку"],
-                ["Не удалось выделить структуру автоматически", "", str(table_proposed or table_structure or table_blocks or "")[:500]],
-            ]
-
-        report_payload["export_schema_version"] = "top10.v3.triple"
-        if table_blocks:
-            report_payload["analysis_structure"] = table_blocks
-        if table_proposed:
-            report_payload["structure_proposal"] = table_proposed
+        report_payload["sheet1_matrix_rows"] = bundle.get("sheet1_matrix_rows") or []
+        report_payload["sheet2_site_columns_rows"] = bundle.get("sheet2_site_columns_rows") or []
+        report_payload["sheet3_proposed_rows"] = bundle.get("sheet3_proposed_rows") or []
+        report_payload["export_matrix_ready"] = True
+        report_payload["export_structure_ready"] = True
+        report_payload["export_matrix_reason"] = ""
+        report_payload["export_structure_reason"] = ""
+        report_payload["export_stage_status"] = {
+            "ok": True,
+            "error": "",
+            "state": "sheets_export_request_sent",
+        }
     elif report_type == "competitors":
         # Для Apps Script конкуренты отправляются в 2-листовом формате:
         # Лист 1: сравнительный анализ (нормализованные блоки x сайты).
@@ -2963,7 +2952,7 @@ async def export_google_sheets(payload: dict = Body(...)) -> JSONResponse:
                 return JSONResponse(
                     content={
                         "errors": [
-                            "Скрипт Google Sheets не поддерживает экспорт top10.v3 "
+                            "Скрипт Google Sheets не поддерживает экспорт top10.v4 strict "
                             "(нужны compare_sheet, sites_sheet и structure_sheet)."
                         ]
                     },

@@ -83,6 +83,13 @@ class AppsScriptSheetsExporter:
             except json.JSONDecodeError:
                 data = {}
 
+        if data.get("ok") is False:
+            error_code = str(data.get("error_code") or "").strip()
+            error_message = str(data.get("error_message") or data.get("error") or "Unknown Apps Script error").strip()
+            if error_code:
+                raise RuntimeError(f"Apps Script returned error [{error_code}]: {error_message}")
+            raise RuntimeError(f"Apps Script returned error: {error_message}")
+
         spreadsheet_url = (
             str(data.get("spreadsheet_url") or "")
             or str(data.get("spreadsheetUrl") or "")

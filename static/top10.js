@@ -209,10 +209,25 @@
       : [];
     const reason = payload.export_matrix_reason || "";
     const source = payload.structures_rows_source || "";
+    const exportStage = payload.export_stage_status && typeof payload.export_stage_status === "object"
+      ? payload.export_stage_status
+      : null;
     const recovered = ["service_data_json_block", "fenced_json_block", "raw_json_array_scan"].includes(source);
 
-    if (!payload.export_matrix_ready) {
-      const message = reason || "Матрица не сформирована, выгружен текстовый fallback.";
+    if (exportStage && exportStage.ok === false) {
+      const details = [
+        String(exportStage.error || "").trim(),
+        ...errors,
+      ].filter(Boolean);
+      const short = details[0] || "Ошибка подготовки экспортного пакета.";
+      renderErrors(details.length ? details : [short], { type: "error", short });
+      return;
+    }
+
+    if (!payload.export_matrix_ready || !payload.export_structure_ready) {
+      const message = reason
+        || payload.export_structure_reason
+        || "Экспортный пакет не сформирован. Экспорт в strict-режиме заблокирован.";
       renderErrors([message, ...errors], { type: "error", short: message });
       return;
     }
@@ -653,9 +668,10 @@
     (payload.pages || []).forEach((page) => pagesGrid.appendChild(createPageCard(page)));
 
     if (exportSheetsBtn) {
-      exportSheetsBtn.disabled = !payload.export_matrix_ready;
-      if (!payload.export_matrix_ready) {
-        exportSheetsBtn.title = payload.export_matrix_reason || "Матрица не сформирована, экспорт будет fallback.";
+      const exportBlocked = !payload.export_matrix_ready || !payload.export_structure_ready;
+      exportSheetsBtn.disabled = exportBlocked;
+      if (exportBlocked) {
+        exportSheetsBtn.title = payload.export_matrix_reason || payload.export_structure_reason || "Экспорт в таблицы заблокирован: нет валидного export_bundle.";
       } else {
         exportSheetsBtn.title = "";
       }
@@ -955,9 +971,12 @@
 
   if (exportSheetsBtn) {
     exportSheetsBtn.addEventListener("click", async () => {
-      if (!lastResult || !lastResult.export_matrix_ready) return;
+      if (!lastResult || !lastResult.export_matrix_ready || !lastResult.export_structure_ready) return;
       exportSheetsBtn.disabled = true;
       exportSheetsBtn.textContent = "Отправляем…";
+      if (progressIdle) {
+        progressIdle.textContent = "Этап sheets_export_request_sent: отправляю данные в Google Sheets…";
+      }
       try {
         const exportPayload = {
           report_type: "top10",
@@ -999,23 +1018,27 @@
         });
         openExportSuccessModal();
         renderErrors([]);
+        if (progressIdle) {
+          progressIdle.textContent = "Этап sheets_export_done: данные успешно выгружены в таблицы.";
+        }
         exportSheetsBtn.textContent = "Готово";
       } catch (error) {
         const message = String(error || "");
         if (
-          message.includes("top10.v3")
+          message.includes("top10.v4")
+          || message.includes("SCHEMA_MISMATCH")
           || message.includes("compare_sheet")
           || message.includes("sites_sheet")
           || message.includes("structure_sheet")
         ) {
-          renderErrors(["Экспорт невозможен: обновите Apps Script для формата top10.v3 (compare/sites/structure)."]);
+          renderErrors(["Экспорт невозможен: обновите Apps Script для формата top10.v4 strict (compare/sites/structure)."]);
           if (progressIdle) {
-            progressIdle.textContent = "Ошибка выгрузки: Apps Script не поддерживает формат top10.v3.";
+            progressIdle.textContent = "Этап sheets_export_failed: Apps Script не поддерживает формат top10.v4 strict.";
           }
         } else {
           renderErrors([message || "Ошибка экспорта в Google Sheets."]);
           if (progressIdle) {
-            progressIdle.textContent = `Ошибка выгрузки: ${message || "неизвестная причина"}`;
+            progressIdle.textContent = `Этап sheets_export_failed: ${message || "неизвестная причина"}`;
           }
         }
         exportSheetsBtn.textContent = "Ошибка";
