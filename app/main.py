@@ -40,6 +40,14 @@ app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 logger = logging.getLogger(__name__)
 
+
+def _build_info_payload() -> dict[str, str]:
+    return {
+        "build_sha": str(settings.app_build_sha or "").strip() or "unknown",
+        "build_time": str(settings.app_build_time or "").strip() or "unknown",
+        "top10_structure_parser": str(settings.top10_structure_parser_version or "v2_strict"),
+    }
+
 FINAL_SUMMARY_PROMPT = """<PROMPT_FINAL_SUMMARY_v1>
 
 Сделай краткое итоговое саммари по проделанной работе (данные Метрики + JTBD-сегментация + анализ скриншотов/UX).
@@ -559,6 +567,11 @@ async def docs_tech(request: Request) -> HTMLResponse:
             "asset_version": datetime.now().strftime("%Y%m%d%H%M%S"),
         },
     )
+
+
+@app.get("/build-info")
+async def build_info() -> JSONResponse:
+    return JSONResponse(content=_build_info_payload())
 
 
 def _is_enabled(raw: str | None, default: bool = True) -> bool:
@@ -1644,207 +1657,164 @@ def _payload_pages_as_artifacts(report_payload: dict) -> list[dict]:
 def _build_top10_proposed_structure_rows(
     table_structure_output: str,
     structure_proposal_fallback: str,
-) -> tuple[list[list[str]], bool, str]:
+) -> tuple[list[list[str]], bool, str, dict, dict]:
     header = ["Блок (человекочитаемый)", "Блок (системный)", "Комментарии по блоку"]
     source_text = str(table_structure_output or "").strip() or str(structure_proposal_fallback or "").strip()
     fallback_rows = [header, ["Не удалось выделить структуру автоматически", "", "Недостаточно структурированных строк в ответе модели."]]
+    parse_stats = {
+        "rows_total": 0,
+        "rows_with_system_id": 0,
+        "dropped_as_reason_lines": 0,
+        "parse_mode": "empty",
+    }
+    parse_examples = {"accepted": [], "dropped": []}
     if not source_text:
-        return fallback_rows, False, "Пустой текст предложенной структуры."
+        return fallback_rows, False, "Пустой текст предложенной структуры.", parse_stats, parse_examples
 
-    parsed_rows: list[list[str]] = [header]
-    skip_prefixes = (
-        "вкладка ",
-        "краткий вывод",
-        "конструктор по",
-        "контроль распределения cta",
-        "контроль распределения",
-        "чек-лист рисков",
-        "маршрут",
-        "итоговая структура",
-        "по каждому шагу",
-        "эти 3–5 точек",
-        "эти 3-5 точек",
-    )
-    separators = (" — ", " – ", " - ", " → ", ": ")
-    stop_prefixes = (
-        "по каждому шагу",
-        "контроль cta",
-        "контроль распределения cta",
-        "контроль распределения",
-        "чек-лист рисков",
+    lines = [_normalize_ws(line) for line in source_text.replace("\r", "").split("\n")]
+    id_pattern = re.compile(r"^[a-z0-9_/\-]{3,}$", flags=re.IGNORECASE)
+    banned_start_pattern = re.compile(
+        r"^(почему|зачем|обоснование|цель|что внутри|cta|proof_type|снимает|конверсионный|закрывает вопрос)\b",
+        flags=re.IGNORECASE,
     )
 
-    def _clean_line(raw_line: str) -> str:
-        return re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", str(raw_line or "").strip())
-
-    def _looks_like_block_name(value: str) -> bool:
+    def _strip_markup(value: str) -> str:
         text = _normalize_ws(value)
-        if not text or len(text) > 180:
-            return False
-        if "—" in text and "(" not in text:
-            return False
-        # Блоки в структуре почти всегда приходят в виде "Название (block_id)".
-        if re.search(r"\([a-z0-9_]{2,}\)\s*$", text):
-            return True
-        # Фолбек для лаконичных названий блоков без id.
-        words = text.split()
-        return 1 <= len(words) <= 8 and text[0].isalpha()
+        text = text.strip("*`_")
+        text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+        text = re.sub(r"^#+\s*", "", text)
+        return _normalize_ws(text)
 
-    def _looks_like_section_header(value: str) -> bool:
-        text = _normalize_ws(value).lower().rstrip(":")
-        if text.startswith(stop_prefixes):
-            return True
-        return text in {"", "--", "контроль cta — рекомендуемые 3–5 точек", "контроль cta - рекомендуемые 3-5 точек"}
-
-    pending_block: tuple[str, str] | None = None
-    collected = 0
-    last_data_row_idx: int | None = None
-
-    def _append_to_last_comment(extra_text: str) -> bool:
-        nonlocal last_data_row_idx
-        if last_data_row_idx is None:
-            return False
-        if not extra_text:
-            return False
-        current_comment = _normalize_ws(parsed_rows[last_data_row_idx][2])
-        parsed_rows[last_data_row_idx][2] = (
-            f"{current_comment} {extra_text}".strip() if current_comment else extra_text
-        )
-        return True
-
-    def _humanize_system_id(value: str) -> str:
-        text = _normalize_ws(value)
+    def _extract_human_system(raw_value: str) -> tuple[str, str] | None:
+        text = _strip_markup(raw_value)
         if not text:
-            return ""
-        pretty = text.replace("_", " ").replace("-", " ").replace("/", " / ")
-        pretty = re.sub(r"\s+", " ", pretty).strip()
-        if not pretty:
-            return text
-        return pretty[:1].upper() + pretty[1:]
+            return None
+        text = re.sub(r"^\d+[.)]\s*", "", text).strip()
+        ru_then_id = re.match(r"^(.+?)\s*\(([a-z0-9_/\-]{3,})\)\s*$", text, flags=re.IGNORECASE)
+        if ru_then_id:
+            human = _normalize_ws(ru_then_id.group(1))
+            system = _normalize_ws(ru_then_id.group(2))
+            if human and system:
+                return human, system
+        id_then_ru = re.match(r"^([a-z0-9_/\-]{3,})\s*\((.+?)\)\s*$", text, flags=re.IGNORECASE)
+        if id_then_ru:
+            system = _normalize_ws(id_then_ru.group(1))
+            human = _normalize_ws(id_then_ru.group(2))
+            if human and system:
+                return human, system
+        return None
 
-    def _is_system_like(value: str) -> bool:
-        text = _normalize_ws(value)
-        if not text:
-            return False
-        if re.search(r"[А-Яа-яЁё]", text):
-            return False
-        return bool(re.fullmatch(r"[a-z0-9_/\-,.\s]+", text, flags=re.IGNORECASE))
+    def _is_reason_line(value: str) -> bool:
+        text = _strip_markup(value).lower()
+        return bool(banned_start_pattern.match(text))
 
-    def _split_block_human_system(value: str) -> tuple[str, str]:
-        text = _normalize_ws(value)
-        if not text:
-            return "", ""
-        m = re.match(r"^(.*?)\s*\(([^()]+)\)\s*$", text)
-        if m:
-            left = _normalize_ws(m.group(1))
-            right = _normalize_ws(m.group(2))
-            left_ru = bool(re.search(r"[А-Яа-яЁё]", left))
-            right_ru = bool(re.search(r"[А-Яа-яЁё]", right))
-            if left_ru and not right_ru:
-                return left, right
-            if right_ru and not left_ru:
-                return right, left
-            if _is_system_like(left) and not _is_system_like(right):
-                return right, left
-            if _is_system_like(right):
-                return left or _humanize_system_id(right), right
-            if _is_system_like(left):
-                return right or _humanize_system_id(left), left
-            return left, right
-
-        if _is_system_like(text):
-            return _humanize_system_id(text), text
-        return text, ""
-
-    for raw in source_text.replace("\r", "").split("\n"):
-        line = _clean_line(raw)
-        if not line:
-            continue
-        if line.startswith("#") or line.startswith("```"):
-            continue
-        md_link = re.match(r"^\[([^\]]+)\]\((https?://[^)]+)\)$", line.strip(), flags=re.IGNORECASE)
-        if md_link:
-            label = md_link.group(1).strip().lower()
-            if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(?:/.*)?$", label):
+    def _collect_comment(start_idx: int, next_block_idx: int | None) -> str:
+        end = next_block_idx if next_block_idx is not None else len(lines)
+        preferred = ""
+        fallback = ""
+        for idx in range(start_idx + 1, min(end, start_idx + 8)):
+            candidate = _strip_markup(lines[idx]).lstrip("—-: ").strip()
+            if not candidate:
                 continue
-        if re.match(r"^https?://", line.lower()):
-            continue
-        if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}(?:/.*)?$", line.lower()):
-            continue
-        if _looks_like_section_header(line):
-            if collected > 0:
+            if re.match(r"^\d+[.)]\s+", candidate):
+                continue
+            if candidate.lower().startswith(("по каждому шагу", "контроль cta", "чек-лист рисков")):
                 break
-            continue
-        if line.lower().startswith(skip_prefixes):
-            continue
+            if _is_reason_line(candidate):
+                preferred = re.sub(
+                    r"^(почему|зачем|обоснование|цель)\s*[:\-—]?\s*",
+                    "",
+                    candidate,
+                    flags=re.IGNORECASE,
+                ).strip()
+                break
+            if not fallback and not re.search(r"\([a-z0-9_/\-]{3,}\)\s*$", candidate, flags=re.IGNORECASE):
+                fallback = candidate
+        comment = preferred or fallback
+        comment = _normalize_ws(comment)
+        if len(comment) > 300:
+            comment = comment[:297].rstrip() + "..."
+        return comment
 
-        lower_line = line.lower()
-        if lower_line.startswith(("почему", "зачем", "обоснование", "причина")):
-            comment_tail = _normalize_ws(re.sub(r"^(почему|зачем|обоснование|причина)\s*[:\-—]?\s*", "", line, flags=re.IGNORECASE))
-            if _append_to_last_comment(comment_tail):
+    def _phase_candidates(phase: str) -> list[tuple[int, str, str, str]]:
+        candidates: list[tuple[int, str, str, str]] = []
+        for idx, raw in enumerate(lines):
+            line = _strip_markup(raw)
+            if not line:
                 continue
-
-        # Двухстрочный формат: "Блок (...)" на одной строке и комментарий на следующей.
-        if pending_block:
-            comment_candidate = _normalize_ws(line.lstrip("—-").strip())
-            if comment_candidate and not _looks_like_block_name(comment_candidate):
-                parsed_rows.append([pending_block[0], pending_block[1], comment_candidate])
-                collected += 1
-                last_data_row_idx = len(parsed_rows) - 1
-                pending_block = None
+            lower = line.lower()
+            if lower.startswith(("https://", "http://")):
                 continue
-            # Если вместо комментария сразу пошёл новый блок, запишем предыдущий пустым и продолжим.
-            parsed_rows.append([pending_block[0], pending_block[1], ""])
-            collected += 1
-            last_data_row_idx = len(parsed_rows) - 1
-            pending_block = None
-
-        # TSV/двухколоночный формат.
-        if "\t" in line:
-            parts = [p.strip() for p in line.split("\t") if p.strip()]
-            if len(parts) >= 2:
-                block = _normalize_ws(parts[0])
-                comment = _normalize_ws(" — ".join(parts[1:]))
-                if _looks_like_block_name(block):
-                    human, system = _split_block_human_system(block)
-                    parsed_rows.append([human or block, system, comment])
-                    collected += 1
-                    last_data_row_idx = len(parsed_rows) - 1
+            if line.startswith("```"):
+                continue
+            if _is_reason_line(line):
+                parse_stats["dropped_as_reason_lines"] += 1
+                if len(parse_examples["dropped"]) < 3:
+                    parse_examples["dropped"].append(line)
+                continue
+            numbered = re.match(r"^\d+[.)]\s+(.+)$", line)
+            target = numbered.group(1) if numbered else line
+            extracted = _extract_human_system(target)
+            if not extracted:
+                if phase == "phase_b":
+                    generic = re.search(r"\(([^\)]+)\)\s*$", target)
+                    if generic:
+                        candidate_id = _normalize_ws(generic.group(1)).lower()
+                        if id_pattern.fullmatch(candidate_id):
+                            human = _normalize_ws(target[: generic.start()].strip())
+                            if human:
+                                extracted = (human, candidate_id)
+                if not extracted:
                     continue
+            human, system = extracted
+            if not id_pattern.fullmatch(system):
+                continue
+            if phase == "phase_a" and not numbered:
+                continue
+            comment = _collect_comment(idx, None)
+            candidates.append((idx, human, system, comment))
+        return candidates
 
-        block = line
-        comment = ""
-        for sep in separators:
-            if sep in line:
-                left, right = line.split(sep, 1)
-                left = left.strip()
-                right = right.strip()
-                if left and right and len(left) <= 180 and _looks_like_block_name(left):
-                    block, comment = left, right
-                    break
-        if comment:
-            human, system = _split_block_human_system(_normalize_ws(block))
-            parsed_rows.append([human or _normalize_ws(block), system, _normalize_ws(comment)])
-            collected += 1
-            last_data_row_idx = len(parsed_rows) - 1
-            continue
+    chosen = _phase_candidates("phase_a")
+    parse_mode = "phase_a"
+    if len(chosen) < 6:
+        chosen = _phase_candidates("phase_b")
+        parse_mode = "phase_b"
 
-        if _looks_like_block_name(block):
-            pending_block = _split_block_human_system(_normalize_ws(block))
-            continue
+    # Recompute comments with next block boundary.
+    chosen.sort(key=lambda item: item[0])
+    rebuilt: list[list[str]] = [header]
+    for i, (idx, human, system, _comment) in enumerate(chosen):
+        next_idx = chosen[i + 1][0] if i + 1 < len(chosen) else None
+        comment = _collect_comment(idx, next_idx)
+        rebuilt.append([human, system, comment])
+        if len(parse_examples["accepted"]) < 3:
+            parse_examples["accepted"].append(f"{human} ({system})")
 
-    if pending_block:
-        parsed_rows.append([pending_block[0], pending_block[1], ""])
-        collected += 1
-        last_data_row_idx = len(parsed_rows) - 1
+    rows_total = len(rebuilt) - 1
+    rows_with_system_id = sum(1 for row in rebuilt[1:] if _normalize_ws(row[1]))
+    parse_stats.update(
+        {
+            "rows_total": rows_total,
+            "rows_with_system_id": rows_with_system_id,
+            "parse_mode": parse_mode,
+        }
+    )
 
-    if len(parsed_rows) <= 1:
-        compact = _normalize_ws(source_text)
-        if len(compact) > 500:
-            compact = f"{compact[:500]}..."
-        return [header, ["Не удалось выделить структуру автоматически", "", compact]], False, "Не удалось извлечь структурированные пары блок/комментарий."
+    banned_single_pattern = re.compile(
+        r"^(снимает тревогу|конверсионный инструмент|закрывает вопрос)\b",
+        flags=re.IGNORECASE,
+    )
+    bad_single_rows = [
+        row for row in rebuilt[1:]
+        if banned_single_pattern.match(_normalize_ws(row[0])) and not _normalize_ws(row[1])
+    ]
+    share_with_id = (rows_with_system_id / rows_total) if rows_total else 0.0
+    if rows_total < 6 or share_with_id < 0.7 or bad_single_rows:
+        reason = "Не удалось извлечь валидные блоки предложенной структуры (quality gate failed)."
+        return fallback_rows, False, reason, parse_stats, parse_examples
 
-    return parsed_rows, True, ""
+    return rebuilt, True, "", parse_stats, parse_examples
 
 
 def _build_competitors_compare_and_site_text(
@@ -2398,6 +2368,7 @@ async def analyze_top10_structure(
     result = {
         "run_id": run_id,
         "run_datetime": run_datetime,
+        **_build_info_payload(),
         "top10_variant": normalized_variant,
         "top10_variant_label": "Light" if normalized_variant == "light" else "Обычный",
         "queries": [],
@@ -2412,6 +2383,13 @@ async def analyze_top10_structure(
         "sheet1_matrix_rows": [],
         "sheet2_site_columns_rows": [],
         "sheet3_proposed_rows": [],
+        "structure_parse_stats": {
+            "rows_total": 0,
+            "rows_with_system_id": 0,
+            "dropped_as_reason_lines": 0,
+            "parse_mode": "not_started",
+        },
+        "structure_parse_examples": {"accepted": [], "dropped": []},
         "export_bundle": {},
         "export_schema_version": "top10.v4.strict",
         "export_matrix_ready": False,
@@ -2628,13 +2606,15 @@ async def analyze_top10_structure(
         # Это защищает от случаев, когда export_optional вернул посайтовый список вместо итогового конструктора.
         result["table_proposed_output"] = result["structure_proposal"] or result.get("table_proposed_output", "")
 
-        proposed_rows, structure_ready, structure_reason = _build_top10_proposed_structure_rows(
+        proposed_rows, structure_ready, structure_reason, parse_stats, parse_examples = _build_top10_proposed_structure_rows(
             result.get("table_proposed_output", ""),
             result.get("structure_proposal", ""),
         )
         result["sheet3_proposed_rows"] = proposed_rows
         result["export_structure_ready"] = structure_ready
         result["export_structure_reason"] = structure_reason
+        result["structure_parse_stats"] = parse_stats
+        result["structure_parse_examples"] = parse_examples
 
         export_bundle = {
             "sheet1_matrix_rows": result["sheet1_matrix_rows"],

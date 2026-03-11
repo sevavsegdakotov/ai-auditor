@@ -2,7 +2,12 @@ name: ai-analitik
 
 services:
   ai-analitik:
-    build: .
+    build:
+      context: .
+      args:
+        APP_BUILD_SHA: ${APP_BUILD_SHA:-unknown}
+        APP_BUILD_TIME: ${APP_BUILD_TIME:-unknown}
+        TOP10_STRUCTURE_PARSER_VERSION: ${TOP10_STRUCTURE_PARSER_VERSION:-v2_strict}
     container_name: ai-analitik
     env_file:
       - .env

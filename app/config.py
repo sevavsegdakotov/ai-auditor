@@ -10,6 +10,9 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class Settings:
+    app_build_sha: str = os.getenv("APP_BUILD_SHA", "")
+    app_build_time: str = os.getenv("APP_BUILD_TIME", "")
+    top10_structure_parser_version: str = os.getenv("TOP10_STRUCTURE_PARSER_VERSION", "v2_strict")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.1")
     keyso_api_token: str = os.getenv("KEYSO_API_TOKEN", "")

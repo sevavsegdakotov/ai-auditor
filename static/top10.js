@@ -228,7 +228,19 @@
       const message = reason
         || payload.export_structure_reason
         || "Экспортный пакет не сформирован. Экспорт в strict-режиме заблокирован.";
-      renderErrors([message, ...errors], { type: "error", short: message });
+      const parseStats = payload.structure_parse_stats && typeof payload.structure_parse_stats === "object"
+        ? payload.structure_parse_stats
+        : null;
+      const parserVersion = String(payload.top10_structure_parser || "").trim();
+      const buildSha = String(payload.build_sha || "").trim();
+      const parserLine = parserVersion
+        ? `Версия парсера структуры: ${parserVersion}${buildSha && buildSha !== "unknown" ? ` (${buildSha.slice(0, 8)})` : ""}`
+        : "";
+      const parseLine = parseStats
+        ? `Парсер структуры: mode=${parseStats.parse_mode || "n/a"}, rows=${parseStats.rows_total || 0}, rows_with_id=${parseStats.rows_with_system_id || 0}, dropped_reason=${parseStats.dropped_as_reason_lines || 0}`
+        : "";
+      const details = [message, parserLine, parseLine, ...errors].filter(Boolean);
+      renderErrors(details, { type: "error", short: message });
       return;
     }
 
@@ -574,6 +586,7 @@
     if (unknownCount > 0) typeLines.push(`- Не определены: ${unknownCount}`);
 
     const proposedRows = Array.isArray(payload.sheet3_proposed_rows) ? payload.sheet3_proposed_rows : [];
+    const structureReady = payload.export_structure_ready !== false;
     const blockLines = [];
     const formatDisplay = (humanReadable, systemName) => {
       const human = String(humanReadable || "").trim();
@@ -587,31 +600,22 @@
       return human || system || "";
     };
 
-    for (let i = 1; i < proposedRows.length; i += 1) {
-      const row = proposedRows[i];
-      if (!Array.isArray(row) || row.length < 1) continue;
-      const rawHuman = String(row[0] || "").trim();
-      const rawSystem = row.length >= 3 ? String(row[1] || "").trim() : "";
-      const rawLegacy = row.length >= 2 && row.length < 3 ? String(row[0] || "").trim() : "";
-      const candidate = row.length >= 3
-        ? formatDisplay(rawHuman, rawSystem)
-        : humanizeBlockName(rawLegacy);
-      if (!candidate) continue;
-      if (/не удалось выделить структуру/i.test(candidate)) continue;
-      if (blockLines.includes(candidate)) continue;
-      blockLines.push(candidate);
-      if (blockLines.length >= 14) break;
-    }
-    if (!blockLines.length) {
-      const fallback = String(payload.structure_proposal || "")
-        .split("\n")
-        .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").trim())
-        .filter((line) => line && !line.startsWith("#"))
-        .slice(0, 10)
-        .map(humanizeBlockName);
-      fallback.forEach((item) => {
-        if (item && !blockLines.includes(item)) blockLines.push(item);
-      });
+    if (structureReady) {
+      for (let i = 1; i < proposedRows.length; i += 1) {
+        const row = proposedRows[i];
+        if (!Array.isArray(row) || row.length < 1) continue;
+        const rawHuman = String(row[0] || "").trim();
+        const rawSystem = row.length >= 3 ? String(row[1] || "").trim() : "";
+        const rawLegacy = row.length >= 2 && row.length < 3 ? String(row[0] || "").trim() : "";
+        const candidate = row.length >= 3
+          ? formatDisplay(rawHuman, rawSystem)
+          : humanizeBlockName(rawLegacy);
+        if (!candidate) continue;
+        if (/не удалось выделить структуру/i.test(candidate)) continue;
+        if (blockLines.includes(candidate)) continue;
+        blockLines.push(candidate);
+        if (blockLines.length >= 14) break;
+      }
     }
     const structureLines = blockLines.length
       ? blockLines.map((block, index) => `${index + 1}. ${block}`).join("\n")
@@ -639,10 +643,12 @@
     if (lightOverviewWrap && lightOverviewDoc && lightOverviewToc) {
       const isLight = String(payload.top10_variant || "").toLowerCase() === "light";
       if (isLight) {
-        const overview = buildLightOverviewMd(payload).replace(
-          /^\s{0,3}#{1,2}\s*Коротко по выборке\s*$/gim,
-          "",
-        ).trim();
+        const overview = buildLightOverviewMd(payload)
+          .replace(/^\s{0,3}#{1,2}\s*Коротко по выборке\s*$/gim, "")
+          .split("\n")
+          .filter((line) => !/^\s*коротко по выборке\s*$/i.test(line))
+          .join("\n")
+          .trim();
         lightOverviewWrap.classList.remove("hidden");
         renderDoc(prettifyTaxonomyText(overview), lightOverviewToc, lightOverviewDoc, "Коротко", "top10-light-overview");
       } else {

@@ -56,9 +56,36 @@ jobs:
         run: |
           PORT_OPT=""
           if [ -n "$DEPLOY_PORT" ]; then PORT_OPT="-p $DEPLOY_PORT"; fi
+          BUILD_SHA="${GITHUB_SHA}"
+          BUILD_TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           ssh -i ~/.ssh/id_deploy $PORT_OPT "$DEPLOY_USER@$DEPLOY_HOST" "
             set -e
             cd '$DEPLOY_PATH'
-            docker compose up -d --build
+            APP_BUILD_SHA='$BUILD_SHA' APP_BUILD_TIME='$BUILD_TIME' TOP10_STRUCTURE_PARSER_VERSION='v2_strict' docker compose up -d --build
             docker compose ps
+          "
+
+      - name: Post-deploy smoke: verify build-info
+        run: |
+          PORT_OPT=""
+          if [ -n "$DEPLOY_PORT" ]; then PORT_OPT="-p $DEPLOY_PORT"; fi
+          SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-8)"
+          ssh -i ~/.ssh/id_deploy $PORT_OPT "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -e
+            cd '$DEPLOY_PATH'
+            SHORT_SHA='$SHORT_SHA'
+            RESP=\$(curl -fsS http://127.0.0.1:8011/build-info)
+            export RESP SHORT_SHA
+            python3 - <<'PY'
+import json, os, sys
+resp = json.loads(os.environ['RESP'])
+short_sha = os.environ['SHORT_SHA']
+build_sha = str(resp.get('build_sha') or '')
+parser = str(resp.get('top10_structure_parser') or '')
+if not build_sha.startswith(short_sha):
+    raise SystemExit(f'build-info mismatch: expected sha prefix {short_sha}, got {build_sha}')
+if parser != 'v2_strict':
+    raise SystemExit(f'parser mismatch: expected v2_strict, got {parser}')
+print('build-info ok:', build_sha, parser)
+PY
           "
